@@ -1,0 +1,39 @@
+const sorry : Π α : Sort 0, α.
+
+const false : Sort 0.
+const false_elim : Π C : Sort 0, Π h : false, C.
+
+const true : Sort 0.
+const true_intro : true.
+
+def implies : Π α : Sort 0, Π β : Sort 0, Sort 0 ≔ λ α : Sort 0, λ β : Sort 0, Π a : α, β.
+def not : Π α : Sort 0, Sort 0 ≔ λ α : Sort 0, implies α false.
+
+const and : Π α : Sort 0, Π β : Sort 0, Sort 0.
+const and_intro : Π α : Sort 0, Π β : Sort 0, Π a : α, Π b : β, and α β.
+const and_elim_left : Π α : Sort 0, Π β : Sort 0, implies (and α β) α.
+const and_elim_right : Π α : Sort 0, Π β : Sort 0, implies (and α β) β.
+
+def consistency : Π P : Sort 0, not (and P (not P)) ≔
+	λ P : Sort 0,
+	λ both : and P (not P),
+	and_elim_right P (not P) both (and_elim_left P (not P) both)
+.
+
+def eo1a :
+	Π P : Sort 0, Π Q : Sort 0, Π R : Sort 0,
+	implies (implies P Q) (implies (implies R P) (implies R Q)) ≔
+	λ P : Sort 0, λ Q : Sort 0, λ R : Sort 0,
+	λ pq : (implies P Q),
+	λ rp : (implies R P),
+	λ r : R,
+	pq (rp r)
+.
+
+
+
+
+def idtype : Sort 0 ≔ Π α : Sort 0, Π x : α, α.
+def id_0 : idtype ≔ λ α : Sort 0, λ x : α, x.
+def id_1 : idtype ≔ id_0 idtype id_0.
+def lmao : idtype ≔ sorry idtype.
