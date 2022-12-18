@@ -163,29 +163,27 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
     match level {
         UniverseLevel::Number(n) => UniverseLevel::Number(*n),
         UniverseLevel::Variable(v) => match *v {},
-        UniverseLevel::Addition { left, right } => {
-            match reduce_universe_level(left, reporter) {
-                UniverseLevel::Number(left) => {
-                    let Some(sum) = left.checked_add(*right) else {
+        UniverseLevel::Addition { left, right } => match reduce_universe_level(left, reporter) {
+            UniverseLevel::Number(left) => {
+                let Some(sum) = left.checked_add(*right) else {
                         reporter.report("universe too large");
                         todo!();
                     };
-                    UniverseLevel::Number(sum)
-                }
-                UniverseLevel::Variable(v) => match v {},
-                UniverseLevel::Addition {
-                    left,
-                    right: right_2,
-                } => {
-                    let Some(right) = right.checked_add(right_2) else {
-                        reporter.report("universe too large");
-                        todo!();
-                    };
-                    UniverseLevel::Addition { left, right }
-                }
-                UniverseLevel::Max { .. } => todo!(),
+                UniverseLevel::Number(sum)
             }
-        }
+            UniverseLevel::Variable(v) => match v {},
+            UniverseLevel::Addition {
+                left,
+                right: right_2,
+            } => {
+                let Some(right) = right.checked_add(right_2) else {
+                        reporter.report("universe too large");
+                        todo!();
+                    };
+                UniverseLevel::Addition { left, right }
+            }
+            UniverseLevel::Max { .. } => todo!(),
+        },
         UniverseLevel::Max { i, left, right } => {
             match (
                 reduce_universe_level(left, reporter),

@@ -138,26 +138,26 @@ pub fn replace(term: &Term, with: &Term) -> Term {
 }
 
 fn replace_inner(term: &Term, with: &Term, depth: usize) -> Term {
-   match term {
-       Term::Variable(v) if v.0 == depth => increase_free(with, depth),
-       Term::Variable(v) if v.0 > depth => Term::Variable(Variable(v.0 - 1)),
-       Term::Abstraction { r#type, body } => {
-           let r#type = Box::new(replace_inner(r#type, with, depth));
-           let body = Box::new(replace_inner(body, with, depth + 1));
-           Term::Abstraction { r#type, body }
-       }
-       Term::Pi { r#type, body } => {
-           let r#type = Box::new(replace_inner(r#type, with, depth));
-           let body = Box::new(replace_inner(body, with, depth + 1));
-           Term::Pi { r#type, body }
-       }
-       Term::Application { left, right } => {
-           let left = Box::new(replace_inner(left, with, depth));
-           let right = Box::new(replace_inner(right, with, depth));
-           Term::Application { left, right }
-       }
+    match term {
+        Term::Variable(v) if v.0 == depth => increase_free(with, depth),
+        Term::Variable(v) if v.0 > depth => Term::Variable(Variable(v.0 - 1)),
+        Term::Abstraction { r#type, body } => {
+            let r#type = Box::new(replace_inner(r#type, with, depth));
+            let body = Box::new(replace_inner(body, with, depth + 1));
+            Term::Abstraction { r#type, body }
+        }
+        Term::Pi { r#type, body } => {
+            let r#type = Box::new(replace_inner(r#type, with, depth));
+            let body = Box::new(replace_inner(body, with, depth + 1));
+            Term::Pi { r#type, body }
+        }
+        Term::Application { left, right } => {
+            let left = Box::new(replace_inner(left, with, depth));
+            let right = Box::new(replace_inner(right, with, depth));
+            Term::Application { left, right }
+        }
         _ => term.clone(),
-   }
+    }
 }
 
 pub fn increase_free(term: &Term, by: usize) -> Term {
