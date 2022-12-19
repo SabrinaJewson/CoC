@@ -104,7 +104,7 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
             continue;
         };
         items.push(match keyword.as_str() {
-            "def" | "const" => {
+            kw::DEFINITION | kw::CONSTANT => {
                 let Some(ident) = tokens.next().and_then(ident_token) else {
                     reporter.error("expected identifier");
                     continue;
@@ -115,15 +115,17 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
                 };
                 let Some(r#type) = parse_term(&mut tokens, reporter) else { continue };
 
-                let body = if keyword.as_str() == "def" {
-                    let Some(Token { kind: TokenKind::ColonEq, .. }) = tokens.next() else {
-                        reporter.error("expected colon equals");
-                        continue;
-                    };
-                    let Some(term) = parse_term(&mut tokens, reporter) else { continue };
-                    Some(term)
-                } else {
-                    None
+                let body = match keyword.as_str() {
+                    kw::DEFINITION => {
+                        let Some(Token { kind: TokenKind::ColonEq, .. }) = tokens.next() else {
+                            reporter.error("expected colon equals");
+                            continue;
+                        };
+                        let Some(term) = parse_term(&mut tokens, reporter) else { continue };
+                        Some(term)
+                    }
+                    kw::CONSTANT => None,
+                    _ => unreachable!(),
                 };
 
                 let Some(Token { kind: TokenKind::Dot, span: end_span }) = tokens.next() else {
@@ -146,6 +148,11 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
     }
 
     Source { items }
+}
+
+mod kw {
+    pub const DEFINITION: &str = "def";
+    pub const CONSTANT: &str = "constant";
 }
 
 fn parse_term<I>(tokens: &mut Peekable<I>, reporter: &mut impl Reporter) -> Option<Term>
