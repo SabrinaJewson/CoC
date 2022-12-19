@@ -70,23 +70,40 @@ fn type_of(
             r#type: param_type,
             body,
         } => {
-            let (param_type_type, param_type) = type_of(variables, *param_type, reporter);
+            let (mut param_type_type, mut param_type) = type_of(variables, *param_type, reporter);
 
-            let Term::Sort { level: param_level } = param_type_type else {
-                reporter.report(format_args!("{kind:?} parameter is not a type"));
-                todo!()
+            let param_level = match param_type_type {
+                Term::Sort { level } => level,
+                r#type => {
+                    reporter.report(format_args!("{kind:?} parameter is not a type"));
+
+                    // Guess that the user meant to write the _type_ of the term they wrote
+                    // e.g. convert (λ x : 5, x) to (λ x : nat, x)
+                    (param_type_type, param_type) = type_of(variables, r#type, reporter);
+                    let Term::Sort { level } = param_type_type else { unreachable!() };
+                    level
+                }
             };
 
             variables.push((param_type, None));
-            let (body_type, body) = type_of(variables, *body, reporter);
+            let (mut body_type, mut body) = type_of(variables, *body, reporter);
             let param_type = Box::new(variables.pop().unwrap().0);
 
             match kind {
                 // The type of the Π type is Sort imax u v
                 AbstractionKind::Pi => {
-                    let Term::Sort { level: body_level } = body_type else {
-                        reporter.report("Π body is not a type");
-                        todo!()
+                    let body_level = match body_type {
+                        Term::Sort { level } => level,
+                        r#type => {
+                            reporter.report("Π body is not a type");
+
+                            // Again, guess that the user meant to write the _type_ of the term they
+                            // wrote.
+                            // e.g. convert (Π x : nat, 6) to (Π x : nat, nat)
+                            (body_type, body) = type_of(variables, r#type, reporter);
+                            let Term::Sort { level } = body_type else { unreachable!() };
+                            level
+                        }
                     };
 
                     let level = UniverseLevel::Max {
