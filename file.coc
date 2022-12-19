@@ -14,6 +14,7 @@ constant and_intro : Π α : Sort 0, Π β : Sort 0, Π a : α, Π b : β, and �
 constant and_elim_left : Π α : Sort 0, Π β : Sort 0, implies (and α β) α.
 constant and_elim_right : Π α : Sort 0, Π β : Sort 0, implies (and α β) β.
 
+-- Proof that ¬(P ∧ ¬P)
 def consistency : Π P : Sort 0, not (and P (not P)) :=
 	λ P : Sort 0,
 	λ both : and P (not P),
@@ -35,5 +36,5 @@ def eo1a :
 
 def idtype : Sort 0 := Π α : Sort 0, Π x : α, α.
 def id   : idtype := λ α : Sort 0, λ x : α, x.
-def id_1 : idtype := id idtype id.
-def id_2 : idtype := sorry idtype.
+def id_1 : idtype := id idtype id. -- Applying it to itself
+def id_2 : idtype := sorry idtype. -- Proof by sorry

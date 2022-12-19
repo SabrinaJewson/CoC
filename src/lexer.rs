@@ -94,6 +94,13 @@ fn lex_inner<'input>(
                 ident.push_str(int_continue);
                 TokenKind::Natural(ident)
             }
+            // Line comment
+            '-' if input.as_str().starts_with('-') => {
+                let lines = input.as_str();
+                let (_, rest) = lines.split_once('\n').unwrap_or((lines, ""));
+                input = rest.chars();
+                continue;
+            }
             ' ' | '\t' | '\n' => continue,
             _ => {
                 let span = Span {
