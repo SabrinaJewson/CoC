@@ -123,23 +123,24 @@ fn parse_item(
         kw::DEFINITION | kw::CONSTANT => {
             let ident = parse_ident(tokens, start_span, reporter)?;
 
-            let colon_token = expect_token(tokens, start_span.join(ident.span), reporter)?;
-            let TokenKind::Colon = colon_token.kind else {
-                reporter.error(colon_token.span, "expected colon");
-                return None;
-            };
+            let colon_span = parse_exact(
+                tokens,
+                TokenKind::Colon,
+                start_span.join(ident.span),
+                reporter,
+            )?;
 
-            let r#type = parse_term(tokens, start_span.join(colon_token.span), reporter)?;
+            let r#type = parse_term(tokens, start_span.join(colon_span), reporter)?;
 
             let body = match keyword.as_str() {
                 kw::DEFINITION => {
-                    let colon_eq_token =
-                        expect_token(tokens, start_span.join(r#type.span), reporter)?;
-                    let TokenKind::ColonEq = colon_eq_token.kind else {
-                        reporter.error(colon_eq_token.span, "expected colon equals");
-                        return None;
-                    };
-                    let term = parse_term(tokens, start_span.join(colon_eq_token.span), reporter)?;
+                    let colon_eq_span = parse_exact(
+                        tokens,
+                        TokenKind::ColonEq,
+                        start_span.join(r#type.span),
+                        reporter,
+                    )?;
+                    let term = parse_term(tokens, start_span.join(colon_eq_span), reporter)?;
                     Some(term)
                 }
                 kw::CONSTANT => None,
@@ -147,15 +148,10 @@ fn parse_item(
             };
 
             let current_span = start_span.join(body.as_ref().map_or(r#type.span, |t| t.span));
-
-            let dot_token = expect_token(tokens, current_span, reporter)?;
-            let TokenKind::Dot = dot_token.kind else {
-                reporter.error(dot_token.span, "expected dot");
-                return None;
-            };
+            let dot_span = parse_exact(tokens, TokenKind::Dot, current_span, reporter)?;
 
             Item::Definition(Definition {
-                span: start_span.join(dot_token.span),
+                span: start_span.join(dot_span),
                 ident,
                 r#type,
                 body,
@@ -216,22 +212,24 @@ fn parse_term(
             token @ (TokenKind::Lambda | TokenKind::Pi) => {
                 let variable = parse_ident(tokens, start_span, reporter)?;
 
-                let colon_token = expect_token(tokens, start_span.join(variable.span), reporter)?;
-                let TokenKind::Colon = colon_token.kind else {
-                    reporter.error(colon_token.span, "expected colon");
-                    return None;
-                };
+                let colon_span = parse_exact(
+                    tokens,
+                    TokenKind::Colon,
+                    start_span.join(variable.span),
+                    reporter,
+                )?;
 
-                let r#type = parse_term(tokens, start_span.join(colon_token.span), reporter)?;
+                let r#type = parse_term(tokens, start_span.join(colon_span), reporter)?;
                 let r#type = Box::new(r#type);
 
-                let comma_token = expect_token(tokens, start_span.join(r#type.span), reporter)?;
-                let TokenKind::Comma = comma_token.kind else {
-                    reporter.error(comma_token.span, "expected comma");
-                    return None;
-                };
+                let comma_span = parse_exact(
+                    tokens,
+                    TokenKind::Comma,
+                    start_span.join(r#type.span),
+                    reporter,
+                )?;
 
-                let body = parse_term(tokens, start_span.join(comma_token.span), reporter)?;
+                let body = parse_term(tokens, start_span.join(comma_span), reporter)?;
                 let body = Box::new(body);
                 Term {
                     span: start_span.join(body.span),
@@ -349,14 +347,20 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
     {
         let plus_token = tokens.next().unwrap();
 
-        let lit = (|| {
-            let nat_token = expect_token(tokens, plus_token.span, reporter)?;
-            let TokenKind::Natural(n) = nat_token.kind else {
-                reporter.error(nat_token.span, "expected natural after `+`");
-                return None;
-            };
-            parse_universe_level_lit(&n, nat_token.span, reporter)
-        })();
+        let lit = match tokens.peek() {
+            Some(token) => {
+                let span = token.span;
+                match &token.kind {
+                    TokenKind::Natural(_) => {
+                        let TokenKind::Natural(n) = tokens.next().unwrap().kind
+                            else { unreachable!() };
+                        parse_universe_level_lit(&n, span, reporter)
+                    }
+                    _ => None,
+                }
+            }
+            None => None,
+        };
         accumulator = UniverseLevel {
             span: accumulator
                 .span
@@ -371,22 +375,6 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
     accumulator
 }
 
-fn parse_ident(
-    tokens: &mut Peekable<impl Iterator<Item = Token>>,
-    fallback_span: Span,
-    reporter: &mut impl Reporter,
-) -> Option<Ident> {
-    let ident_token = expect_token(tokens, fallback_span, reporter)?;
-    let TokenKind::Ident(ident) = ident_token.kind else {
-        reporter.error(ident_token.span, "expected identifier");
-        return None;
-    };
-    Some(Ident {
-        name: ident,
-        span: ident_token.span,
-    })
-}
-
 fn parse_universe_level_lit(
     nat: &str,
     span: Span,
@@ -399,18 +387,48 @@ fn parse_universe_level_lit(
     Some(UniverseLevelLit { value, span })
 }
 
-fn expect_token(
+fn parse_exact(
     tokens: &mut Peekable<impl Iterator<Item = Token>>,
+    exact: TokenKind,
     fallback_span: Span,
     reporter: &mut impl Reporter,
-) -> Option<Token> {
+) -> Option<Span> {
     match tokens.next() {
-        Some(token) => Some(token),
+        Some(token) if token.kind == exact => Some(token.span),
+        Some(token) => {
+            reporter.error(
+                token.span,
+                format_args!("expected `{exact}`, found `{token}`"),
+            );
+            None
+        }
         None => {
-            reporter.error(fallback_span, "unexpected EOF");
+            reporter.error(
+                fallback_span,
+                format_args!("unexpected EOF, expected `{exact}`"),
+            );
             None
         }
     }
+}
+
+fn parse_ident(
+    tokens: &mut Peekable<impl Iterator<Item = Token>>,
+    fallback_span: Span,
+    reporter: &mut impl Reporter,
+) -> Option<Ident> {
+    let Some(token) = tokens.next() else {
+        reporter.error(fallback_span, "unexpected EOF, expected identifier");
+        return None;
+    };
+    let span = token.span;
+    Some(match token.kind {
+        TokenKind::Ident(name) => Ident { name, span },
+        _ => {
+            reporter.error(span, format_args!("expected identifier, found `{token}`"));
+            return None;
+        }
+    })
 }
 
 use crate::lexer;

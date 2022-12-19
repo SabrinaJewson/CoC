@@ -4,7 +4,19 @@ pub struct Token {
     pub span: Span,
 }
 
-#[derive(Debug)]
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Display for Token {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.kind, f)
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum TokenKind {
     Colon,
     ColonEq,
@@ -16,6 +28,32 @@ pub enum TokenKind {
     Natural(String),
     Ident(Box<Ident>),
     Delimited(Vec<Token>),
+}
+
+impl Display for TokenKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Colon => f.write_str(":"),
+            Self::ColonEq => f.write_str(":="),
+            Self::Dot => f.write_str("."),
+            Self::Comma => f.write_str(","),
+            Self::Pi => f.write_str("Π"),
+            Self::Lambda => f.write_str("λ"),
+            Self::Plus => f.write_str("+"),
+            Self::Natural(n) => Display::fmt(n, f),
+            Self::Ident(i) => Display::fmt(i.as_str(), f),
+            Self::Delimited(tokens) => {
+                f.write_str("(")?;
+                for (i, token) in tokens.iter().enumerate() {
+                    if i != 0 {
+                        f.write_str(" ")?;
+                    }
+                    Display::fmt(token, f)?;
+                }
+                f.write_str(")")
+            }
+        }
+    }
 }
 
 pub fn lex(input: &str, reporter: &mut impl Reporter) -> Vec<Token> {
@@ -161,6 +199,9 @@ fn string_offset(s: &str, base: &str) -> usize {
 
 use crate::reporter::Reporter;
 use crate::reporter::Span;
+use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::mem;
 use unicode_ident::is_xid_continue;
 use unicode_ident::is_xid_start;
