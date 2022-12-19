@@ -4,14 +4,14 @@ pub fn typecheck(definitions: Vec<Definition>, reporter: &mut impl Reporter) {
     for definition in definitions {
         let (type_type, r#type) = type_of(&mut variables, definition.r#type, reporter);
         let Term::Sort { .. } = type_type else {
-            reporter.report("definition type is not a type");
+            reporter.error("definition type is not a type");
             continue;
         };
 
         let body = definition.body.map(|body| {
             let (got_type, body) = type_of(&mut variables, body, reporter);
             if got_type != r#type {
-                reporter.report(format_args!(
+                reporter.error(format_args!(
                     "type mismatch of definition:\n expected: {:?}\n      got: {:?}",
                     r#type, got_type,
                 ));
@@ -63,7 +63,7 @@ fn type_of(
             let param_level = match param_type_type {
                 Term::Sort { level } => level,
                 r#type => {
-                    reporter.report(format_args!("{kind:?} parameter is not a type"));
+                    reporter.error(format_args!("{kind:?} parameter is not a type"));
 
                     // Guess that the user meant to write the _type_ of the term they wrote
                     // e.g. convert (λ x : 5, x) to (λ x : nat, x)
@@ -83,7 +83,7 @@ fn type_of(
                     let body_level = match body_type {
                         Term::Sort { level } => level,
                         r#type => {
-                            reporter.report("Π body is not a type");
+                            reporter.error("Π body is not a type");
 
                             // Again, guess that the user meant to write the _type_ of the term they
                             // wrote.
@@ -126,13 +126,13 @@ fn type_of(
             let (right_type, right) = type_of(variables, *right, reporter);
 
             let Term::Abstraction { kind: AbstractionKind::Pi, r#type: param_type, body: ret_type } = &left_type else {
-                reporter.report("left hand side of application is not a function");
+                reporter.error("left hand side of application is not a function");
                 // Recover by ignoring the application
                 return (left_type, left);
             };
 
             if **param_type != right_type {
-                reporter.report(format_args!(
+                reporter.error(format_args!(
                     "function application type mismatch on {:?} of {:?}\n expected: {:?}\n      got: {:?}",
                     left, right,
                     param_type, right_type
@@ -170,7 +170,7 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
         UniverseLevel::Addition { left, right } => match reduce_universe_level(left, reporter) {
             UniverseLevel::Number(left) => {
                 let sum = left.checked_add(*right).unwrap_or_else(|| {
-                    reporter.report("universe too large");
+                    reporter.error("universe too large");
                     u32::MAX
                 });
                 UniverseLevel::Number(sum)
@@ -181,7 +181,7 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
                 right: right_2,
             } => {
                 let right = right.checked_add(right_2).unwrap_or_else(|| {
-                    reporter.report("universe too large");
+                    reporter.error("universe too large");
                     u32::MAX
                 });
                 UniverseLevel::Addition { left, right }

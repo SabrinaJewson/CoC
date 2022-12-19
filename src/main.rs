@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
 
 struct CliReporter;
 impl Reporter for CliReporter {
-    fn report(&mut self, error: impl Display) {
+    fn error(&mut self, error: impl Display) {
         eprintln!("error: {error}");
     }
 }

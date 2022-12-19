@@ -5,7 +5,7 @@ pub struct Span {
 }
 
 pub trait Reporter {
-    fn report(&mut self, error: impl Display);
+    fn error(&mut self, error: impl Display);
 }
 
 use std::fmt::Display;

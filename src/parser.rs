@@ -65,24 +65,24 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
 
     while let Some(token) = tokens.next() {
         let TokenKind::Ident(keyword) = token.kind else {
-            reporter.report("Expected identifier");
+            reporter.error("Expected identifier");
             continue;
         };
         items.push(match keyword.as_str() {
             "def" | "const" => {
                 let Some(Token { kind: TokenKind::Ident(ident), .. }) = tokens.next() else {
-                    reporter.report("expected identifier");
+                    reporter.error("expected identifier");
                     continue;
                 };
                 let Some(Token { kind: TokenKind::Colon, .. }) = tokens.next() else {
-                    reporter.report("expected colon");
+                    reporter.error("expected colon");
                     continue;
                 };
                 let Some(r#type) = parse_term(&mut tokens, reporter) else { continue };
 
                 let body = if keyword.as_str() == "def" {
                     let Some(Token { kind: TokenKind::ColonEq, .. }) = tokens.next() else {
-                        reporter.report("expected colon equals");
+                        reporter.error("expected colon equals");
                         continue;
                     };
                     let Some(term) = parse_term(&mut tokens, reporter) else { continue };
@@ -92,7 +92,7 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
                 };
 
                 let Some(Token { kind: TokenKind::Dot, .. }) = tokens.next() else {
-                    reporter.report("expected dot");
+                    reporter.error("expected dot");
                     continue;
                 };
                 Item::Definition(Definition {
@@ -102,7 +102,7 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
                 })
             }
             _ => {
-                reporter.report(format_args!("unknown item {}", keyword.as_str()));
+                reporter.error(format_args!("unknown item {}", keyword.as_str()));
                 continue;
             }
         });
@@ -143,16 +143,16 @@ where
             TokenKind::Ident(ident) => Term::Variable(ident),
             token @ (TokenKind::Lambda | TokenKind::Pi) => {
                 let Some(Token { kind: TokenKind::Ident(variable), .. }) = tokens.next() else {
-                    reporter.report("expected identifier");
+                    reporter.error("expected identifier");
                     return None;
                 };
                 let Some(Token { kind: TokenKind::Colon, .. }) = tokens.next() else {
-                    reporter.report("expected colon");
+                    reporter.error("expected colon");
                     return None;
                 };
                 let r#type = Box::new(parse_term(tokens, reporter)?);
                 let Some(Token { kind: TokenKind::Comma, .. }) = tokens.next() else {
-                    reporter.report("expected comma");
+                    reporter.error("expected comma");
                     return None;
                 };
                 let body = Box::new(parse_term(tokens, reporter)?);
@@ -171,7 +171,7 @@ where
                 let mut tokens = tokens.into_iter().peekable();
                 let term = parse_term(&mut tokens, reporter)?;
                 if tokens.next().is_some() {
-                    reporter.report("trailing tokens");
+                    reporter.error("trailing tokens");
                     return None;
                 }
                 term
@@ -190,7 +190,7 @@ where
     }
 
     if accumulator.is_none() {
-        reporter.report("expected term");
+        reporter.error("expected term");
     }
 
     accumulator
@@ -201,14 +201,14 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
     reporter: &mut impl Reporter,
 ) -> Option<UniverseLevel> {
     let Some(token) = tokens.next() else {
-        reporter.report("expected universe level");
+        reporter.error("expected universe level");
         return None;
     };
 
     let mut accumulator = match token.kind {
         TokenKind::Natural(n) => {
             let Ok(n) = n.parse::<u32>() else {
-                reporter.report("universe level too high");
+                reporter.error("universe level too high");
                 return None;
             };
             UniverseLevel::Number(n)
@@ -224,13 +224,13 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
             let mut tokens = tokens.into_iter().peekable();
             let level = parse_universe_level(&mut tokens, reporter)?;
             if tokens.next().is_some() {
-                reporter.report("trailing tokens");
+                reporter.error("trailing tokens");
                 return None;
             }
             level
         }
         _ => {
-            reporter.report("expected universe level");
+            reporter.error("expected universe level");
             return None;
         }
     };
@@ -241,11 +241,11 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
     {
         tokens.next();
         let Some(Token { kind: TokenKind::Natural(n), .. }) = tokens.next() else {
-            reporter.report("expected natural after `+`");
+            reporter.error("expected natural after `+`");
             return None;
         };
         let Ok(n) = n.parse::<u32>() else {
-            reporter.report("universe level too high");
+            reporter.error("universe level too high");
             return None;
         };
         accumulator = UniverseLevel::Addition {

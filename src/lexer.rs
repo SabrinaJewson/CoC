@@ -51,7 +51,7 @@ fn lex_inner<'input>(
             }
             ')' if depth != 0 => return (tokens, input.as_str()),
             ')' => {
-                reporter.report("unexpected closing bracket");
+                reporter.error("unexpected closing bracket");
                 continue;
             }
             c if is_xid_start(c) => {
@@ -80,7 +80,7 @@ fn lex_inner<'input>(
             }
             ' ' | '\t' | '\n' => continue,
             _ => {
-                reporter.report(format_args!("unexpected character {c:?}"));
+                reporter.error(format_args!("unexpected character {c:?}"));
                 continue;
             }
         };
@@ -94,7 +94,7 @@ fn lex_inner<'input>(
     }
 
     if depth != 0 {
-        reporter.report("missing closing bracket");
+        reporter.error("missing closing bracket");
     }
 
     (tokens, input.as_str())

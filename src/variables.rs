@@ -90,7 +90,7 @@ fn resolve_term(
         parser::Term::Variable(v) => {
             let index = variables.iter().rev().position(|local| *local == v);
             let Some(index) = index else {
-                reporter.report(format_args!("unknown variable {}", v.as_str()));
+                reporter.error(format_args!("unknown variable {}", v.as_str()));
                 return None;
             };
 
@@ -125,7 +125,7 @@ fn resolve_universe_level(
     Some(match level {
         parser::UniverseLevel::Number(n) => UniverseLevel::Number(n),
         parser::UniverseLevel::Variable(v) => {
-            reporter.report(format_args!("unknown universe variable {}", v.as_str()));
+            reporter.error(format_args!("unknown universe variable {}", v.as_str()));
             return None;
         }
         parser::UniverseLevel::Addition { left, right } => UniverseLevel::Addition {
