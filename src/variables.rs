@@ -1,6 +1,17 @@
+pub enum Item {
+    Definition(Definition),
+    Inductive(Inductive),
+}
+
 pub struct Definition {
     pub r#type: Term,
     pub body: Option<Term>,
+}
+
+pub struct Inductive {
+    pub params: Vec<Term>,
+    pub sort: Term,
+    pub constructors: Vec<Term>,
 }
 
 #[derive(Clone)]
@@ -114,43 +125,96 @@ pub struct Variable(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniverseVariable {}
 
-pub fn resolve(items: Vec<parser::Item>, reporter: &mut impl Reporter) -> Vec<Definition> {
+pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut impl Reporter) -> Vec<Item> {
     let mut variables = Vec::new();
-    let mut definitions = Vec::new();
+    let mut items = Vec::new();
 
-    for item in items {
-        definitions.push(match item {
+    for item in parser_items {
+        items.push(match item {
             parser::Item::Definition(def) => {
-                let Some(r#type) = resolve_term(&mut variables, def.r#type, reporter)
+                let Some(r#type) = resolve_term(&mut variables, &def.r#type, reporter)
                     else { continue };
+
                 let body = match def.body {
                     Some(body) => {
-                        let Some(body) = resolve_term(&mut variables, body, reporter)
+                        let Some(body) = resolve_term(&mut variables, &body, reporter)
                             else { continue };
                         Some(body)
                     }
                     None => None,
                 };
+
                 variables.push(def.ident.name);
-                Definition { r#type, body }
+
+                Item::Definition(Definition { r#type, body })
+            }
+            parser::Item::Inductive(inductive) => {
+                let mut params = Vec::new();
+                for param_group in inductive.params {
+                    for ident in param_group.idents {
+                        let Some(r#type) =
+                            resolve_term(&mut variables, &param_group.r#type, reporter)
+                            else { break };
+                        params.push(r#type);
+                        variables.push(ident.name);
+                    }
+                }
+
+                let Some(sort) = resolve_term(&mut variables, &inductive.sort, reporter)
+                    else { continue };
+
+                // Bring the type name in scope for the constructors
+                variables.push(inductive.ident.name);
+                let ident_index = variables.len() - 1;
+
+                let mut constructors = Vec::new();
+                let mut constructor_idents = Vec::new();
+                for constructor in inductive.constructors {
+                    let Some(r#type) = resolve_term(&mut variables, &constructor.r#type, reporter)
+                        else { continue };
+
+                    constructors.push(r#type);
+
+                    let ident = &variables[ident_index];
+                    constructor_idents.push(
+                        lexer::Ident::new_string(format!("{ident}_{}", constructor.ident.name))
+                            .unwrap(),
+                    );
+                }
+
+                let ident = variables.pop().unwrap();
+                let recursor_name = lexer::Ident::new_string(format!("{ident}_rec")).unwrap();
+
+                // Take the parameters out of scope
+                variables.truncate(variables.len() - params.len());
+
+                variables.push(ident);
+                variables.extend(constructor_idents);
+                variables.push(recursor_name);
+
+                Item::Inductive(Inductive {
+                    params,
+                    sort,
+                    constructors,
+                })
             }
         });
     }
 
-    definitions
+    items
 }
 
 fn resolve_term(
     variables: &mut Vec<Box<lexer::Ident>>,
-    term: parser::Term,
+    term: &parser::Term,
     reporter: &mut impl Reporter,
 ) -> Option<Term> {
-    let kind = match term.kind {
+    let kind = match &term.kind {
         parser::TermKind::Sort { level } => TermKind::Sort {
             level: resolve_universe_level(level, reporter)?,
         },
         parser::TermKind::Variable(v) => {
-            let index = variables.iter().rev().position(|local| *local == v);
+            let index = variables.iter().rev().position(|local| *local == *v);
             let Some(index) = index else {
                 reporter.error(term.span, format_args!("unknown variable {}", v.as_str()));
                 return None;
@@ -164,21 +228,21 @@ fn resolve_term(
             r#type,
             body,
         } => {
-            let r#type = Box::new(resolve_term(variables, *r#type, reporter)?);
+            let r#type = Box::new(resolve_term(variables, r#type, reporter)?);
 
-            variables.push(variable.name);
-            let body = Box::new(resolve_term(variables, *body, reporter)?);
+            variables.push(variable.name.to_owned());
+            let body = Box::new(resolve_term(variables, body, reporter)?);
             variables.pop();
 
             TermKind::Abstraction {
-                token,
+                token: *token,
                 r#type,
                 body,
             }
         }
         parser::TermKind::Application { left, right } => {
-            let left = Box::new(resolve_term(variables, *left, reporter)?);
-            let right = Box::new(resolve_term(variables, *right, reporter)?);
+            let left = Box::new(resolve_term(variables, left, reporter)?);
+            let right = Box::new(resolve_term(variables, right, reporter)?);
             TermKind::Application { left, right }
         }
         parser::TermKind::Error => TermKind::Error,
@@ -188,11 +252,11 @@ fn resolve_term(
 }
 
 fn resolve_universe_level(
-    level: parser::UniverseLevel,
+    level: &parser::UniverseLevel,
     reporter: &mut impl Reporter,
 ) -> Option<UniverseLevel> {
-    let kind = match level.kind {
-        parser::UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(n),
+    let kind = match &level.kind {
+        parser::UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(*n),
         parser::UniverseLevelKind::Variable(v) => {
             reporter.error(
                 level.span,
@@ -201,13 +265,13 @@ fn resolve_universe_level(
             return None;
         }
         parser::UniverseLevelKind::Addition { left, right } => UniverseLevelKind::Addition {
-            left: Box::new(resolve_universe_level(*left, reporter)?),
-            right,
+            left: Box::new(resolve_universe_level(left, reporter)?),
+            right: *right,
         },
         parser::UniverseLevelKind::Max { i, left, right } => UniverseLevelKind::Max {
-            i,
-            left: Box::new(resolve_universe_level(*left, reporter)?),
-            right: Box::new(resolve_universe_level(*right, reporter)?),
+            i: *i,
+            left: Box::new(resolve_universe_level(left, reporter)?),
+            right: Box::new(resolve_universe_level(right, reporter)?),
         },
         parser::UniverseLevelKind::Error => UniverseLevelKind::Error,
     };

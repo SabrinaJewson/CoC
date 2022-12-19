@@ -25,6 +25,7 @@ pub enum TokenKind {
     Pi,
     Lambda,
     Plus,
+    Bar,
     Natural(String),
     Ident(Box<Ident>),
     Delimited(Vec<Token>),
@@ -40,6 +41,7 @@ impl Display for TokenKind {
             Self::Pi => f.write_str("Π"),
             Self::Lambda => f.write_str("λ"),
             Self::Plus => f.write_str("+"),
+            Self::Bar => f.write_str("|"),
             Self::Natural(n) => Display::fmt(n, f),
             Self::Ident(i) => Display::fmt(i.as_str(), f),
             Self::Delimited(tokens) => {
@@ -91,6 +93,7 @@ fn lex_inner<'input>(
             'Π' => TokenKind::Pi,
             'λ' => TokenKind::Lambda,
             '+' => TokenKind::Plus,
+            '|' => TokenKind::Bar,
             '(' => {
                 let (tokens, rest) = lex_inner(input.as_str(), depth + 1, span_start + 1, reporter);
                 input = rest.chars();
@@ -181,8 +184,18 @@ impl Ident {
         Self::is_valid(&s).then(|| unsafe { Self::new_box_unchecked(s) })
     }
 
+    pub fn new_string(s: String) -> Option<Box<Self>> {
+        Self::new_box(s.into_boxed_str())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.inner
+    }
+}
+
+impl Display for Ident {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

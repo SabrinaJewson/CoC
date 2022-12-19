@@ -1,27 +1,32 @@
-pub fn typecheck(definitions: Vec<Definition>, reporter: &mut impl Reporter) {
+pub fn typecheck(items: Vec<Item>, reporter: &mut impl Reporter) {
     let mut variables = Vec::new();
 
-    for definition in definitions {
-        let (type_type, r#type) = type_of(&mut variables, definition.r#type, reporter);
-        let TermKind::Sort { .. } = type_type.kind else {
-            reporter.error(r#type.span, "definition type is not a type");
-            continue;
-        };
+    for item in items {
+        match item {
+            Item::Definition(item) => {
+                let (type_type, r#type) = type_of(&mut variables, item.r#type, reporter);
+                let TermKind::Sort { .. } = type_type.kind else {
+                    reporter.error(r#type.span, "definition type is not a type");
+                    continue;
+                };
 
-        let body = definition.body.map(|body| {
-            let (got_type, body) = type_of(&mut variables, body, reporter);
-            if got_type != r#type {
-                reporter.error(
-                    body.span,
-                    format_args!(
-                        "type mismatch of definition:\n expected: {:?}\n      got: {:?}",
-                        r#type, got_type,
-                    ),
-                );
+                let body = item.body.map(|body| {
+                    let (got_type, body) = type_of(&mut variables, body, reporter);
+                    if got_type != r#type {
+                        reporter.error(
+                            body.span,
+                            format_args!(
+                                "type mismatch of definition:\n expected: {:?}\n      got: {:?}",
+                                r#type, got_type,
+                            ),
+                        );
+                    }
+                    body
+                });
+                variables.push((r#type, body));
             }
-            body
-        });
-        variables.push((r#type, body));
+            Item::Inductive(_item) => todo!(),
+        }
     }
 }
 
@@ -279,7 +284,7 @@ use crate::parser::UniverseLevelLit;
 use crate::reporter::Reporter;
 use crate::reporter::Span;
 use crate::variables;
-use crate::variables::Definition;
+use crate::variables::Item;
 use crate::variables::Term;
 use crate::variables::TermKind;
 use crate::variables::UniverseLevel;

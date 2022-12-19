@@ -4,6 +4,7 @@ pub struct Source {
 
 pub enum Item {
     Definition(Definition),
+    Inductive(Inductive),
 }
 
 pub struct Definition {
@@ -13,9 +14,22 @@ pub struct Definition {
     pub span: Span,
 }
 
-pub struct Ident {
-    pub name: Box<lexer::Ident>,
+pub struct Inductive {
+    pub ident: Ident,
+    pub params: Vec<ParamGroup>,
+    pub sort: Term,
+    pub constructors: Vec<Constructor>,
     pub span: Span,
+}
+
+pub struct ParamGroup {
+    pub idents: Vec<Ident>,
+    pub r#type: Term,
+}
+
+pub struct Constructor {
+    pub ident: Ident,
+    pub r#type: Term,
 }
 
 pub struct Term {
@@ -95,6 +109,11 @@ impl Display for UniverseLevelLit {
     }
 }
 
+pub struct Ident {
+    pub name: Box<lexer::Ident>,
+    pub span: Span,
+}
+
 pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Reporter) -> Source {
     let mut tokens = tokens.into_iter().peekable();
 
@@ -157,6 +176,45 @@ fn parse_item(
                 body,
             })
         }
+        kw::INDUCTIVE => {
+            let ident = parse_ident(tokens, start_span, reporter)?;
+
+            let mut params = Vec::new();
+            while let Some(token) = tokens.next_if(|t| matches!(t.kind, TokenKind::Delimited(_))) {
+                let TokenKind::Delimited(tokens) = token.kind else { unreachable!() };
+                let param_group = with_delimited(tokens, reporter, |tokens, reporter| {
+                    parse_param_group(tokens, token.span, reporter)
+                });
+                if let Some(param_group) = param_group {
+                    params.push(param_group);
+                }
+            }
+
+            let current_span = start_span.join(params.last().map_or(ident.span, |p| p.r#type.span));
+            let colon_span = parse_exact(tokens, TokenKind::Colon, current_span, reporter)?;
+
+            let sort = parse_term(tokens, start_span.join(colon_span), reporter)?;
+
+            let mut constructors = Vec::new();
+            while let Some(bar_token) = tokens.next_if(|t| t.kind == TokenKind::Bar) {
+                let ident = parse_ident(tokens, bar_token.span, reporter)?;
+                let colon_span = parse_exact(tokens, TokenKind::Colon, ident.span, reporter)?;
+                let r#type = parse_term(tokens, ident.span.join(colon_span), reporter)?;
+                constructors.push(Constructor { ident, r#type });
+            }
+
+            let current_span =
+                start_span.join(constructors.last().map_or(sort.span, |c| c.r#type.span));
+            let dot_span = parse_exact(tokens, TokenKind::Dot, current_span, reporter)?;
+
+            Item::Inductive(Inductive {
+                ident,
+                params,
+                sort,
+                constructors,
+                span: start_span.join(dot_span),
+            })
+        }
         _ => {
             reporter.error(
                 start_span,
@@ -170,6 +228,28 @@ fn parse_item(
 mod kw {
     pub const DEFINITION: &str = "def";
     pub const CONSTANT: &str = "constant";
+    pub const INDUCTIVE: &str = "inductive";
+}
+
+fn parse_param_group(
+    tokens: &mut Peekable<impl Iterator<Item = Token>>,
+    fallback_span: Span,
+    reporter: &mut impl Reporter,
+) -> Option<ParamGroup> {
+    let first_ident = parse_ident(tokens, fallback_span, reporter)?;
+
+    let mut idents = vec![first_ident];
+    while let Some(token) = tokens.next_if(|t| matches!(t.kind, TokenKind::Ident(_))) {
+        let TokenKind::Ident(name) = token.kind else { unreachable!() };
+        let span = token.span;
+        idents.push(Ident { name, span });
+    }
+
+    let colon_span = parse_exact(tokens, TokenKind::Colon, fallback_span, reporter)?;
+
+    let r#type = parse_term(tokens, colon_span, reporter)?;
+
+    Some(ParamGroup { idents, r#type })
 }
 
 fn parse_term(
@@ -187,6 +267,7 @@ fn parse_term(
                     | TokenKind::Dot
                     | TokenKind::Comma
                     | TokenKind::Plus
+                    | TokenKind::Bar
                     | TokenKind::Natural(_)
             };
         }
@@ -245,21 +326,13 @@ fn parse_term(
                     },
                 }
             }
-            TokenKind::Delimited(tokens) => {
-                let mut tokens = tokens.into_iter().peekable();
-                let term = (|| {
-                    let term = parse_term(&mut tokens, start_span, reporter)?;
-                    if let Some(span) = tokens.map(|t| t.span).reduce(Span::join) {
-                        reporter.error(span, "trailing tokens");
-                        return None;
-                    }
-                    Some(term)
-                })();
-                term.unwrap_or(Term {
-                    kind: TermKind::Error,
-                    span: start_span,
-                })
-            }
+            TokenKind::Delimited(tokens) => with_delimited(tokens, reporter, |tokens, reporter| {
+                parse_term(tokens, start_span, reporter)
+            })
+            .unwrap_or(Term {
+                kind: TermKind::Error,
+                span: start_span,
+            }),
             not_term!() => unreachable!(),
         };
 
@@ -324,14 +397,10 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
             kind: UniverseLevelKind::Variable(ident),
             span: start_span,
         },
-        TokenKind::Delimited(tokens) => {
-            let mut tokens = tokens.into_iter().peekable();
-            let level = parse_universe_level(&mut tokens, start_span, reporter);
-            if let Some(span) = tokens.map(|t| t.span).reduce(Span::join) {
-                reporter.error(span, "trailing tokens");
-            }
-            level
-        }
+        TokenKind::Delimited(tokens) => with_delimited(tokens, reporter, |tokens, reporter| {
+            Some(parse_universe_level(tokens, start_span, reporter))
+        })
+        .unwrap(),
         _ => {
             reporter.error(start_span, "expected universe level");
             UniverseLevel {
@@ -373,6 +442,19 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
     }
 
     accumulator
+}
+
+fn with_delimited<R: Reporter, O>(
+    tokens: Vec<Token>,
+    reporter: &mut R,
+    f: impl FnOnce(&mut Peekable<vec::IntoIter<Token>>, &mut R) -> Option<O>,
+) -> Option<O> {
+    let mut tokens = tokens.into_iter().peekable();
+    let out = f(&mut tokens, reporter)?;
+    if let Some(span) = tokens.map(|t| t.span).reduce(Span::join) {
+        reporter.error(span, "trailing tokens");
+    }
+    Some(out)
 }
 
 fn parse_universe_level_lit(
@@ -441,3 +523,4 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::iter::Peekable;
+use std::vec;
