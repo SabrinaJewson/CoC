@@ -3,7 +3,7 @@ pub fn typecheck(definitions: Vec<Definition>, reporter: &mut impl Reporter) {
 
     for definition in definitions {
         let (type_type, r#type) = type_of(&mut variables, definition.r#type, reporter);
-        let Term::Sort { .. } = type_type else {
+        let TermKind::Sort { .. } = type_type.kind else {
             reporter.error("definition type is not a type");
             continue;
         };
@@ -24,51 +24,67 @@ pub fn typecheck(definitions: Vec<Definition>, reporter: &mut impl Reporter) {
 
 fn type_of(
     variables: &mut Vec<(Term, Option<Term>)>,
-    term: Term,
+    mut term: Term,
     reporter: &mut impl Reporter,
 ) -> (Term, Term) {
     let r#type: Term;
-    let reduced: Term;
 
-    match term {
-        Term::Sort { level } => {
+    match term.kind {
+        TermKind::Sort { level } => {
             let level = reduce_universe_level(&level, reporter);
-            let raised_level = UniverseLevel::Addition {
-                left: Box::new(level.clone()),
-                right: 1,
+
+            let raised_level = UniverseLevel {
+                kind: UniverseLevelKind::Addition {
+                    left: Box::new(level.clone()),
+                    right: UniverseLevelLit {
+                        value: 1,
+                        span: level.span,
+                    },
+                },
+                span: level.span,
             };
-            r#type = Term::Sort {
-                level: reduce_universe_level(&raised_level, reporter),
+            r#type = Term {
+                kind: TermKind::Sort {
+                    level: reduce_universe_level(&raised_level, reporter),
+                },
+                span: Span::none(),
             };
-            reduced = Term::Sort { level };
+
+            term.kind = TermKind::Sort { level };
         }
-        Term::Variable(v) => {
+        TermKind::Variable(v) => {
             let pull_by = v.0 + 1;
             let (original_type, value) = &variables[variables.len() - pull_by];
-            r#type = variables::increase_free(original_type, pull_by);
-            // TODO: Is this enough to δ-reduce?
-            reduced = if let Some(value) = value {
-                variables::increase_free(value, pull_by)
-            } else {
-                Term::Variable(v)
+            let type_term = variables::increase_free(original_type, pull_by);
+            r#type = Term {
+                kind: type_term.kind,
+                span: type_term.span,
             };
+            // TODO: Is this enough to δ-reduce?
+            if let Some(value) = value {
+                term = variables::increase_free(value, pull_by);
+            }
         }
-        Term::Abstraction {
-            kind,
+        TermKind::Abstraction {
+            token,
             r#type: param_type,
             body,
         } => {
             let (mut param_type_type, mut param_type) = type_of(variables, *param_type, reporter);
 
-            let param_level = match param_type_type {
-                Term::Sort { level } => level,
-                r#type => {
-                    reporter.error(format_args!("{kind:?} parameter is not a type"));
+            let param_level = match param_type_type.kind {
+                TermKind::Sort { level } => level,
+                kind => {
+                    reporter.error(format_args!("{token:?} parameter is not a type"));
 
                     // Guess that the user meant to write the _type_ of the term they wrote
                     // e.g. convert (λ x : 5, x) to (λ x : nat, x)
-                    (param_type_type, param_type) = type_of(variables, r#type, reporter);
-                    let Term::Sort { level } = param_type_type else { unreachable!() };
+                    let assumed_type = Term {
+                        kind,
+                        span: param_type.span,
+                    };
+                    (param_type_type, param_type) = type_of(variables, assumed_type, reporter);
+                    let TermKind::Sort { level } = param_type_type.kind else { unreachable!() };
                     level
                 }
             };
@@ -77,55 +93,67 @@ fn type_of(
             let (mut body_type, mut body) = type_of(variables, *body, reporter);
             let param_type = Box::new(variables.pop().unwrap().0);
 
-            match kind {
+            match token {
                 // The type of the Π type is Sort imax u v
-                AbstractionKind::Pi => {
-                    let body_level = match body_type {
-                        Term::Sort { level } => level,
-                        r#type => {
+                AbstractionToken::Pi => {
+                    let body_level = match body_type.kind {
+                        TermKind::Sort { level } => level,
+                        kind => {
                             reporter.error("Π body is not a type");
 
-                            // Again, guess that the user meant to write the _type_ of the term they
-                            // wrote.
+                            // Guess that the user meant to write the _type_ of the term they wrote.
                             // e.g. convert (Π x : nat, 6) to (Π x : nat, nat)
-                            (body_type, body) = type_of(variables, r#type, reporter);
-                            let Term::Sort { level } = body_type else { unreachable!() };
+                            let assumed_type = Term {
+                                kind,
+                                span: body.span,
+                            };
+                            (body_type, body) = type_of(variables, assumed_type, reporter);
+                            let TermKind::Sort { level } = body_type.kind else { unreachable!() };
                             level
                         }
                     };
 
-                    let level = UniverseLevel::Max {
-                        i: true,
-                        left: Box::new(param_level),
-                        right: Box::new(body_level),
+                    let level = UniverseLevel {
+                        kind: UniverseLevelKind::Max {
+                            i: true,
+                            left: Box::new(param_level),
+                            right: Box::new(body_level),
+                        },
+                        span: Span::none(),
                     };
 
-                    r#type = Term::Sort {
-                        level: reduce_universe_level(&level, reporter),
+                    r#type = Term {
+                        kind: TermKind::Sort {
+                            level: reduce_universe_level(&level, reporter),
+                        },
+                        span: Span::none(),
                     };
                 }
                 // The type of the λ type is the Π type
-                AbstractionKind::Lambda => {
-                    r#type = Term::Abstraction {
-                        kind: AbstractionKind::Pi,
-                        r#type: param_type.clone(),
-                        // TODO: Are the de bruijn indices correct here?
-                        body: Box::new(body_type),
+                AbstractionToken::Lambda => {
+                    r#type = Term {
+                        kind: TermKind::Abstraction {
+                            token: AbstractionToken::Pi,
+                            r#type: param_type.clone(),
+                            // TODO: Are the de bruijn indices correct here?
+                            body: Box::new(body_type),
+                        },
+                        span: Span::none(),
                     };
                 }
             }
 
-            reduced = Term::Abstraction {
-                kind,
+            term.kind = TermKind::Abstraction {
+                token,
                 r#type: param_type,
                 body: Box::new(body),
             };
         }
-        Term::Application { left, right } => {
+        TermKind::Application { left, right } => {
             let (left_type, left) = type_of(variables, *left, reporter);
             let (right_type, right) = type_of(variables, *right, reporter);
 
-            let Term::Abstraction { kind: AbstractionKind::Pi, r#type: param_type, body: ret_type } = &left_type else {
+            let TermKind::Abstraction { token: AbstractionToken::Pi, r#type: param_type, body: ret_type } = &left_type.kind else {
                 reporter.error("left hand side of application is not a function");
                 // Recover by ignoring the application
                 return (left_type, left);
@@ -143,71 +171,91 @@ fn type_of(
             (_, r#type) = type_of(variables, unreduced_type, reporter);
 
             // TODO: recursive replacing; is this right?
-            reduced = if let Term::Abstraction {
-                kind: AbstractionKind::Lambda,
+            if let TermKind::Abstraction {
+                token: AbstractionToken::Lambda,
                 r#type,
                 body,
-            } = left
+            } = left.kind
             {
                 assert_eq!(*r#type, **param_type);
                 let unreduced = variables::replace(&body, &right);
-                type_of(variables, unreduced, reporter).1
+                (_, term) = type_of(variables, unreduced, reporter);
             } else {
                 let left = Box::new(left);
                 let right = Box::new(right);
-                Term::Application { left, right }
+                term.kind = TermKind::Application { left, right };
             };
         }
     }
 
-    (r#type, reduced)
+    (r#type, term)
 }
 
 fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) -> UniverseLevel {
-    match level {
-        UniverseLevel::Number(n) => UniverseLevel::Number(*n),
-        UniverseLevel::Variable(v) => match *v {},
-        UniverseLevel::Addition { left, right } => match reduce_universe_level(left, reporter) {
-            UniverseLevel::Number(left) => {
-                let sum = left.checked_add(*right).unwrap_or_else(|| {
-                    reporter.error("universe too large");
-                    u32::MAX
-                });
-                UniverseLevel::Number(sum)
-            }
-            UniverseLevel::Variable(v) => match v {},
-            UniverseLevel::Addition {
-                left,
-                right: right_2,
-            } => {
-                let right = right.checked_add(right_2).unwrap_or_else(|| {
-                    reporter.error("universe too large");
-                    u32::MAX
-                });
-                UniverseLevel::Addition { left, right }
-            }
-            UniverseLevel::Max { .. } => todo!(),
-        },
-        UniverseLevel::Max { i, left, right } => {
-            match (
-                reduce_universe_level(left, reporter),
-                reduce_universe_level(right, reporter),
-            ) {
-                (UniverseLevel::Number(_), UniverseLevel::Number(0)) if *i => {
-                    UniverseLevel::Number(0)
+    let kind = match &level.kind {
+        UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(*n),
+        UniverseLevelKind::Variable(v) => match *v {},
+        UniverseLevelKind::Addition { left, right } => {
+            match reduce_universe_level(left, reporter).kind {
+                UniverseLevelKind::Lit(left) => {
+                    let lit = add_universe_level_lit(left, *right, reporter);
+                    UniverseLevelKind::Lit(lit)
                 }
-                (UniverseLevel::Number(left), UniverseLevel::Number(right)) => {
-                    UniverseLevel::Number(u32::max(left, right))
+                UniverseLevelKind::Variable(v) => match v {},
+                UniverseLevelKind::Addition {
+                    left,
+                    right: right_2,
+                } => {
+                    let right = add_universe_level_lit(*right, right_2, reporter);
+                    UniverseLevelKind::Addition { left, right }
+                }
+                UniverseLevelKind::Max { .. } => todo!(),
+            }
+        }
+        UniverseLevelKind::Max { i, left, right } => {
+            let left = reduce_universe_level(left, reporter);
+            let right = reduce_universe_level(right, reporter);
+            match (left.kind, right.kind) {
+                (
+                    UniverseLevelKind::Lit(_),
+                    lit @ UniverseLevelKind::Lit(UniverseLevelLit { value: 0, .. }),
+                ) if *i => lit,
+                (UniverseLevelKind::Lit(left), UniverseLevelKind::Lit(right)) => {
+                    UniverseLevelKind::Lit(UniverseLevelLit {
+                        value: u32::max(left.value, right.value),
+                        span: left.span.join(right.span),
+                    })
                 }
                 _ => todo!(),
             }
         }
+    };
+    let span = level.span;
+    UniverseLevel { kind, span }
+}
+
+fn add_universe_level_lit(
+    left: UniverseLevelLit,
+    right: UniverseLevelLit,
+    reporter: &mut impl Reporter,
+) -> UniverseLevelLit {
+    let sum = left.value.checked_add(right.value).unwrap_or_else(|| {
+        reporter.error("universe too large");
+        u32::MAX
+    });
+    UniverseLevelLit {
+        value: sum,
+        span: left.span.join(right.span),
     }
 }
 
-use crate::parser::AbstractionKind;
+use crate::parser::AbstractionToken;
+use crate::parser::UniverseLevelLit;
 use crate::reporter::Reporter;
+use crate::reporter::Span;
 use crate::variables;
 use crate::variables::Definition;
 use crate::variables::Term;
+use crate::variables::TermKind;
 use crate::variables::UniverseLevel;
+use crate::variables::UniverseLevelKind;

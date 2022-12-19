@@ -7,19 +7,30 @@ pub enum Item {
 }
 
 pub struct Definition {
-    pub ident: Box<Ident>,
+    pub ident: Ident,
     pub r#type: Term,
     pub body: Option<Term>,
+    pub span: Span,
 }
 
-pub enum Term {
+pub struct Ident {
+    pub name: Box<lexer::Ident>,
+    pub span: Span,
+}
+
+pub struct Term {
+    pub kind: TermKind,
+    pub span: Span,
+}
+
+pub enum TermKind {
     Sort {
         level: UniverseLevel,
     },
-    Variable(Box<Ident>),
+    Variable(Box<lexer::Ident>),
     Abstraction {
-        kind: AbstractionKind,
-        variable: Box<Ident>,
+        token: AbstractionToken,
+        variable: Ident,
         r#type: Box<Term>,
         body: Box<Term>,
     },
@@ -30,12 +41,12 @@ pub enum Term {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum AbstractionKind {
+pub enum AbstractionToken {
     Pi,
     Lambda,
 }
 
-impl Debug for AbstractionKind {
+impl Debug for AbstractionToken {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Pi => "Π",
@@ -44,12 +55,17 @@ impl Debug for AbstractionKind {
     }
 }
 
-pub enum UniverseLevel {
-    Number(u32),
-    Variable(Box<Ident>),
+pub struct UniverseLevel {
+    pub kind: UniverseLevelKind,
+    pub span: Span,
+}
+
+pub enum UniverseLevelKind {
+    Lit(UniverseLevelLit),
+    Variable(Box<lexer::Ident>),
     Addition {
         left: Box<UniverseLevel>,
-        right: u32,
+        right: UniverseLevelLit,
     },
     Max {
         i: bool,
@@ -58,19 +74,38 @@ pub enum UniverseLevel {
     },
 }
 
+#[derive(Clone, Copy)]
+pub struct UniverseLevelLit {
+    pub value: u32,
+    pub span: Span,
+}
+
+impl PartialEq for UniverseLevelLit {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl Display for UniverseLevelLit {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.value, f)
+    }
+}
+
 pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Reporter) -> Source {
     let mut tokens = tokens.into_iter().peekable();
 
     let mut items = Vec::new();
 
     while let Some(token) = tokens.next() {
+        let start_span = token.span;
         let TokenKind::Ident(keyword) = token.kind else {
             reporter.error("Expected identifier");
             continue;
         };
         items.push(match keyword.as_str() {
             "def" | "const" => {
-                let Some(Token { kind: TokenKind::Ident(ident), .. }) = tokens.next() else {
+                let Some(ident) = tokens.next().and_then(ident_token) else {
                     reporter.error("expected identifier");
                     continue;
                 };
@@ -91,11 +126,13 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
                     None
                 };
 
-                let Some(Token { kind: TokenKind::Dot, .. }) = tokens.next() else {
+                let Some(Token { kind: TokenKind::Dot, span: end_span }) = tokens.next() else {
                     reporter.error("expected dot");
                     continue;
                 };
+
                 Item::Definition(Definition {
+                    span: start_span.join(end_span),
                     ident,
                     r#type,
                     body,
@@ -115,7 +152,7 @@ fn parse_term<I>(tokens: &mut Peekable<I>, reporter: &mut impl Reporter) -> Opti
 where
     I: Iterator<Item = Token>,
 {
-    let mut accumulator = None;
+    let mut accumulator: Option<Term> = None;
 
     while let Some(peeked) = tokens.peek() {
         macro_rules! not_term {
@@ -133,16 +170,24 @@ where
             break;
         }
 
-        let term = match tokens.next().unwrap().kind {
+        let token = tokens.next().unwrap();
+        let start_span = token.span;
+        let term = match token.kind {
             TokenKind::Ident(ident) if ident.as_str() == "Sort" => {
                 let Some(level) = parse_universe_level(tokens, reporter) else {
                     continue;
                 };
-                Term::Sort { level }
+                Term {
+                    span: start_span.join(level.span),
+                    kind: TermKind::Sort { level },
+                }
             }
-            TokenKind::Ident(ident) => Term::Variable(ident),
+            TokenKind::Ident(ident) => Term {
+                kind: TermKind::Variable(ident),
+                span: start_span,
+            },
             token @ (TokenKind::Lambda | TokenKind::Pi) => {
-                let Some(Token { kind: TokenKind::Ident(variable), .. }) = tokens.next() else {
+                let Some(variable) = tokens.next().and_then(ident_token) else {
                     reporter.error("expected identifier");
                     return None;
                 };
@@ -156,15 +201,18 @@ where
                     return None;
                 };
                 let body = Box::new(parse_term(tokens, reporter)?);
-                Term::Abstraction {
-                    kind: match token {
-                        TokenKind::Pi => AbstractionKind::Pi,
-                        TokenKind::Lambda => AbstractionKind::Lambda,
-                        _ => unreachable!(),
+                Term {
+                    span: start_span.join(body.span),
+                    kind: TermKind::Abstraction {
+                        token: match token {
+                            TokenKind::Pi => AbstractionToken::Pi,
+                            TokenKind::Lambda => AbstractionToken::Lambda,
+                            _ => unreachable!(),
+                        },
+                        variable,
+                        r#type,
+                        body,
                     },
-                    variable,
-                    r#type,
-                    body,
                 }
             }
             TokenKind::Delimited(tokens) => {
@@ -180,9 +228,12 @@ where
         };
 
         accumulator = Some(if let Some(left) = accumulator {
-            Term::Application {
-                left: Box::new(left),
-                right: Box::new(term),
+            Term {
+                span: left.span.join(term.span),
+                kind: TermKind::Application {
+                    left: Box::new(left),
+                    right: Box::new(term),
+                },
             }
         } else {
             term
@@ -205,21 +256,29 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
         return None;
     };
 
+    let start_span = token.span;
+
     let mut accumulator = match token.kind {
         TokenKind::Natural(n) => {
-            let Ok(n) = n.parse::<u32>() else {
-                reporter.error("universe level too high");
-                return None;
-            };
-            UniverseLevel::Number(n)
+            let lit = parse_universe_level_lit(&n, start_span, reporter)?;
+            UniverseLevel {
+                kind: UniverseLevelKind::Lit(lit),
+                span: start_span,
+            }
         }
         TokenKind::Ident(ident) if ["max", "imax"].contains(&ident.as_str()) => {
             let i = ident.as_str() == "imax";
             let left = Box::new(parse_universe_level(tokens, reporter)?);
             let right = Box::new(parse_universe_level(tokens, reporter)?);
-            UniverseLevel::Max { i, left, right }
+            UniverseLevel {
+                span: start_span.join(right.span),
+                kind: UniverseLevelKind::Max { i, left, right },
+            }
         }
-        TokenKind::Ident(ident) => UniverseLevel::Variable(ident),
+        TokenKind::Ident(ident) => UniverseLevel {
+            kind: UniverseLevelKind::Variable(ident),
+            span: start_span,
+        },
         TokenKind::Delimited(tokens) => {
             let mut tokens = tokens.into_iter().peekable();
             let level = parse_universe_level(&mut tokens, reporter)?;
@@ -240,28 +299,52 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
         .map_or(false, |t| matches!(t.kind, TokenKind::Plus))
     {
         tokens.next();
-        let Some(Token { kind: TokenKind::Natural(n), .. }) = tokens.next() else {
+        let Some(Token { kind: TokenKind::Natural(n), span }) = tokens.next() else {
             reporter.error("expected natural after `+`");
             return None;
         };
-        let Ok(n) = n.parse::<u32>() else {
-            reporter.error("universe level too high");
-            return None;
-        };
-        accumulator = UniverseLevel::Addition {
-            left: Box::new(accumulator),
-            right: n,
+        let lit = parse_universe_level_lit(&n, span, reporter)?;
+        accumulator = UniverseLevel {
+            span: accumulator.span.join(span),
+            kind: UniverseLevelKind::Addition {
+                left: Box::new(accumulator),
+                right: lit,
+            },
         };
     }
 
     Some(accumulator)
 }
 
-use crate::lexer::Ident;
+fn parse_universe_level_lit(
+    nat: &str,
+    span: Span,
+    reporter: &mut impl Reporter,
+) -> Option<UniverseLevelLit> {
+    let Ok(value) = nat.parse::<u32>() else {
+        reporter.error("universe level too high");
+        return None;
+    };
+    Some(UniverseLevelLit { value, span })
+}
+
+fn ident_token(token: lexer::Token) -> Option<Ident> {
+    match token.kind {
+        TokenKind::Ident(name) => Some(Ident {
+            name,
+            span: token.span,
+        }),
+        _ => None,
+    }
+}
+
+use crate::lexer;
 use crate::lexer::Token;
 use crate::lexer::TokenKind;
 use crate::reporter::Reporter;
+use crate::reporter::Span;
 use std::fmt;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::fmt::Formatter;
 use std::iter::Peekable;
