@@ -153,13 +153,13 @@ fn type_of(
             let (left_type, left) = type_of(variables, *left, reporter);
             let (right_type, right) = type_of(variables, *right, reporter);
 
-            let TermKind::Abstraction { token: AbstractionToken::Pi, r#type: param_type, body: ret_type } = &left_type.kind else {
+            let TermKind::Abstraction { token: AbstractionToken::Pi, r#type: param_type, body: ret_type } = left_type.kind else {
                 reporter.error("left hand side of application is not a function");
                 // Recover by ignoring the application
                 return (left_type, left);
             };
 
-            if **param_type != right_type {
+            if *param_type != right_type {
                 reporter.error(format_args!(
                     "function application type mismatch on {:?} of {:?}\n expected: {:?}\n      got: {:?}",
                     left, right,
@@ -167,7 +167,7 @@ fn type_of(
                 ));
             }
 
-            let unreduced_type = variables::replace(ret_type, &right);
+            let unreduced_type = variables::replace(*ret_type, &right);
             (_, r#type) = type_of(variables, unreduced_type, reporter);
 
             // TODO: recursive replacing; is this right?
@@ -177,8 +177,8 @@ fn type_of(
                 body,
             } = left.kind
             {
-                assert_eq!(*r#type, **param_type);
-                let unreduced = variables::replace(&body, &right);
+                assert_eq!(*r#type, *param_type);
+                let unreduced = variables::replace(*body, &right);
                 (_, term) = type_of(variables, unreduced, reporter);
             } else {
                 let left = Box::new(left);

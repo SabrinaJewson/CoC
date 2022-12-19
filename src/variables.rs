@@ -202,12 +202,12 @@ fn resolve_universe_level(
     Some(UniverseLevel { kind, span })
 }
 
-pub fn replace(term: &Term, with: &Term) -> Term {
+pub fn replace(term: Term, with: &Term) -> Term {
     replace_inner(term, with, 0)
 }
 
-fn replace_inner(term: &Term, with: &Term, depth: usize) -> Term {
-    let kind = match &term.kind {
+fn replace_inner(term: Term, with: &Term, depth: usize) -> Term {
+    let kind = match term.kind {
         // The substitution itself
         TermKind::Variable(v) if v.0 == depth => return increase_free(with, depth),
         // Decrease free variables indices
@@ -217,9 +217,8 @@ fn replace_inner(term: &Term, with: &Term, depth: usize) -> Term {
             r#type,
             body,
         } => {
-            let &token = token;
-            let r#type = Box::new(replace_inner(r#type, with, depth));
-            let body = Box::new(replace_inner(body, with, depth + 1));
+            let r#type = Box::new(replace_inner(*r#type, with, depth));
+            let body = Box::new(replace_inner(*body, with, depth + 1));
             TermKind::Abstraction {
                 token,
                 r#type,
@@ -227,11 +226,11 @@ fn replace_inner(term: &Term, with: &Term, depth: usize) -> Term {
             }
         }
         TermKind::Application { left, right } => {
-            let left = Box::new(replace_inner(left, with, depth));
-            let right = Box::new(replace_inner(right, with, depth));
+            let left = Box::new(replace_inner(*left, with, depth));
+            let right = Box::new(replace_inner(*right, with, depth));
             TermKind::Application { left, right }
         }
-        _ => term.kind.clone(),
+        _ => term.kind,
     };
     let span = term.span;
     Term { kind, span }
