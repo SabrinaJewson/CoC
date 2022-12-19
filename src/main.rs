@@ -41,7 +41,7 @@ mod cli_reporter {
                 .position(|(i, _)| i == span.end)
                 .unwrap();
 
-            let _ = Report::build(ariadne::ReportKind::Error, self.cache.0, 0)
+            let _ = Report::build(ariadne::ReportKind::Error, self.cache.0, start)
                 .with_message(&error)
                 .with_label(Label::new((self.cache.0, start..end)).with_message(&error))
                 .finish()

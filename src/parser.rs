@@ -117,7 +117,7 @@ fn parse_item(
 
     let start_span = keyword_token.span;
     let TokenKind::Ident(keyword) = keyword_token.kind else {
-        reporter.error(keyword_token.span, "expected identifier");
+        reporter.error(keyword_token.span, "expected command name");
         return None;
     };
     Some(match keyword.as_str() {
