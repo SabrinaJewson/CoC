@@ -37,8 +37,11 @@ fn lex_inner<'input>(
         let Some(c) = input.next() else { break };
 
         let kind = match c {
+            ':' if input.as_str().starts_with('=') => {
+                input.next();
+                TokenKind::ColonEq
+            }
             ':' => TokenKind::Colon,
-            '≔' => TokenKind::ColonEq,
             '.' => TokenKind::Dot,
             ',' => TokenKind::Comma,
             'Π' => TokenKind::Pi,
