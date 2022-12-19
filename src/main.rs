@@ -136,18 +136,21 @@ fn type_of(
 
             if **param_type != right_type {
                 reporter.report(format_args!(
-                    "function application type mismatch\n expected: {:?}\n      got: {:?}",
+                    "function application type mismatch on {:?} of {:?}\n expected: {:?}\n      got: {:?}",
+                    left, right,
                     param_type, right_type
                 ));
                 todo!()
             }
 
-            r#type = variables::replace(ret_type, &right);
+            let unreduced_type = variables::replace(ret_type, &right);
+            (_, r#type) = type_of(variables, unreduced_type, reporter);
 
             // TODO: recursive replacing; is this right?
             reduced = if let Term::Abstraction { r#type, body } = left {
                 assert_eq!(*r#type, **param_type);
-                variables::replace(&body, &right)
+                let unreduced = variables::replace(&body, &right);
+                type_of(variables, unreduced, reporter).1
             } else {
                 let left = Box::new(left);
                 let right = Box::new(right);

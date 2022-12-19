@@ -34,6 +34,6 @@ def eo1a :
 
 
 def idtype : Sort 0 ≔ Π α : Sort 0, Π x : α, α.
-def id_0 : idtype ≔ λ α : Sort 0, λ x : α, x.
-def id_1 : idtype ≔ id_0 idtype id_0.
-def lmao : idtype ≔ sorry idtype.
+def id   : idtype ≔ λ α : Sort 0, λ x : α, x.
+def id_1 : idtype ≔ id idtype id.
+def id_2 : idtype ≔ sorry idtype.

@@ -3,13 +3,25 @@ pub struct Definition {
     pub body: Option<Term>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Term {
     Sort { level: UniverseLevel },
     Variable(Variable),
     Abstraction { r#type: Box<Term>, body: Box<Term> },
     Pi { r#type: Box<Term>, body: Box<Term> },
     Application { left: Box<Term>, right: Box<Term> },
+}
+
+impl Debug for Term {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sort { level } => write!(f, "Sort {level:?}"),
+            Self::Variable(v) => write!(f, "{}", v.0),
+            Self::Abstraction { r#type, body } => write!(f, "(λ {type:?}, {body:?})"),
+            Self::Pi { r#type, body } => write!(f, "(Π {type:?}, {body:?})"),
+            Self::Application { left, right } => write!(f, "({left:?} {right:?})"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,3 +201,6 @@ fn increase_free_inner(term: &Term, by: usize, lowest_free: usize) -> Term {
 use crate::lexer::Ident;
 use crate::parser;
 use crate::reporter::Reporter;
+use core::fmt;
+use std::fmt::Debug;
+use std::fmt::Formatter;
