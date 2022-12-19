@@ -9,3 +9,4 @@ edition = "2021"
 clap = { version = "4.0.29", features = ["derive"] }
 anyhow = "1.0.67"
 unicode-ident = "1.0.6"
+ariadne = "0.1.5"

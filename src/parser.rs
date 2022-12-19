@@ -38,6 +38,7 @@ pub enum TermKind {
         left: Box<Term>,
         right: Box<Term>,
     },
+    Error,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,13 +66,15 @@ pub enum UniverseLevelKind {
     Variable(Box<lexer::Ident>),
     Addition {
         left: Box<UniverseLevel>,
-        right: UniverseLevelLit,
+        /// `None` indicates an error
+        right: Option<UniverseLevelLit>,
     },
     Max {
         i: bool,
         left: Box<UniverseLevel>,
         right: Box<UniverseLevel>,
     },
+    Error,
 }
 
 #[derive(Clone, Copy)]
@@ -97,57 +100,84 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
 
     let mut items = Vec::new();
 
-    while let Some(token) = tokens.next() {
-        let start_span = token.span;
-        let TokenKind::Ident(keyword) = token.kind else {
-            reporter.error("Expected identifier");
-            continue;
-        };
-        items.push(match keyword.as_str() {
-            kw::DEFINITION | kw::CONSTANT => {
-                let Some(ident) = tokens.next().and_then(ident_token) else {
-                    reporter.error("expected identifier");
-                    continue;
-                };
-                let Some(Token { kind: TokenKind::Colon, .. }) = tokens.next() else {
-                    reporter.error("expected colon");
-                    continue;
-                };
-                let Some(r#type) = parse_term(&mut tokens, reporter) else { continue };
-
-                let body = match keyword.as_str() {
-                    kw::DEFINITION => {
-                        let Some(Token { kind: TokenKind::ColonEq, .. }) = tokens.next() else {
-                            reporter.error("expected colon equals");
-                            continue;
-                        };
-                        let Some(term) = parse_term(&mut tokens, reporter) else { continue };
-                        Some(term)
-                    }
-                    kw::CONSTANT => None,
-                    _ => unreachable!(),
-                };
-
-                let Some(Token { kind: TokenKind::Dot, span: end_span }) = tokens.next() else {
-                    reporter.error("expected dot");
-                    continue;
-                };
-
-                Item::Definition(Definition {
-                    span: start_span.join(end_span),
-                    ident,
-                    r#type,
-                    body,
-                })
-            }
-            _ => {
-                reporter.error(format_args!("unknown item {}", keyword.as_str()));
-                continue;
-            }
-        });
+    while tokens.peek().is_some() {
+        if let Some(item) = parse_item(&mut tokens, reporter) {
+            items.push(item);
+        }
     }
 
     Source { items }
+}
+
+fn parse_item(
+    tokens: &mut Peekable<impl Iterator<Item = Token>>,
+    reporter: &mut impl Reporter,
+) -> Option<Item> {
+    let keyword_token = tokens.next().unwrap();
+
+    let start_span = keyword_token.span;
+    let TokenKind::Ident(keyword) = keyword_token.kind else {
+        reporter.error(keyword_token.span, "expected identifier");
+        return None;
+    };
+    Some(match keyword.as_str() {
+        kw::DEFINITION | kw::CONSTANT => {
+            let ident_token = expect_token(tokens, start_span, reporter)?;
+            let TokenKind::Ident(ident) = ident_token.kind else {
+                reporter.error(ident_token.span, "expected identifier");
+                return None;
+            };
+            let ident = Ident {
+                name: ident,
+                span: ident_token.span,
+            };
+
+            let colon_token = expect_token(tokens, start_span.join(ident.span), reporter)?;
+            let TokenKind::Colon = colon_token.kind else {
+                reporter.error(colon_token.span, "expected colon");
+                return None;
+            };
+
+            let r#type = parse_term(tokens, start_span.join(colon_token.span), reporter)?;
+
+            let body = match keyword.as_str() {
+                kw::DEFINITION => {
+                    let colon_eq_token =
+                        expect_token(tokens, start_span.join(r#type.span), reporter)?;
+                    let TokenKind::ColonEq = colon_eq_token.kind else {
+                        reporter.error(colon_eq_token.span, "expected colon equals");
+                        return None;
+                    };
+                    let term = parse_term(tokens, start_span.join(colon_eq_token.span), reporter)?;
+                    Some(term)
+                }
+                kw::CONSTANT => None,
+                _ => unreachable!(),
+            };
+
+            let current_span = start_span.join(body.as_ref().map_or(r#type.span, |t| t.span));
+
+            let dot_token = expect_token(tokens, current_span, reporter)?;
+            let TokenKind::Dot = dot_token.kind else {
+                reporter.error(dot_token.span, "expected dot");
+                return None;
+            };
+
+            Item::Definition(Definition {
+                span: start_span.join(dot_token.span),
+                ident,
+                r#type,
+                body,
+            })
+        }
+        _ => {
+            reporter.error(
+                start_span,
+                format_args!("unknown item {}", keyword.as_str()),
+            );
+            return None;
+        }
+    })
 }
 
 mod kw {
@@ -155,7 +185,11 @@ mod kw {
     pub const CONSTANT: &str = "constant";
 }
 
-fn parse_term<I>(tokens: &mut Peekable<I>, reporter: &mut impl Reporter) -> Option<Term>
+fn parse_term<I>(
+    tokens: &mut Peekable<I>,
+    fallback_span: Span,
+    reporter: &mut impl Reporter,
+) -> Option<Term>
 where
     I: Iterator<Item = Token>,
 {
@@ -181,9 +215,7 @@ where
         let start_span = token.span;
         let term = match token.kind {
             TokenKind::Ident(ident) if ident.as_str() == "Sort" => {
-                let Some(level) = parse_universe_level(tokens, reporter) else {
-                    continue;
-                };
+                let level = parse_universe_level(tokens, start_span, reporter);
                 Term {
                     span: start_span.join(level.span),
                     kind: TermKind::Sort { level },
@@ -194,20 +226,33 @@ where
                 span: start_span,
             },
             token @ (TokenKind::Lambda | TokenKind::Pi) => {
-                let Some(variable) = tokens.next().and_then(ident_token) else {
-                    reporter.error("expected identifier");
+                let variable_token = expect_token(tokens, start_span, reporter)?;
+                let TokenKind::Ident(variable) = variable_token.kind else {
+                    reporter.error(variable_token.span, "expected identifier");
                     return None;
                 };
-                let Some(Token { kind: TokenKind::Colon, .. }) = tokens.next() else {
-                    reporter.error("expected colon");
+                let variable = Ident {
+                    name: variable,
+                    span: variable_token.span,
+                };
+
+                let colon_token = expect_token(tokens, start_span.join(variable.span), reporter)?;
+                let TokenKind::Colon = colon_token.kind else {
+                    reporter.error(colon_token.span, "expected colon");
                     return None;
                 };
-                let r#type = Box::new(parse_term(tokens, reporter)?);
-                let Some(Token { kind: TokenKind::Comma, .. }) = tokens.next() else {
-                    reporter.error("expected comma");
+
+                let r#type = parse_term(tokens, start_span.join(colon_token.span), reporter)?;
+                let r#type = Box::new(r#type);
+
+                let comma_token = expect_token(tokens, start_span.join(r#type.span), reporter)?;
+                let TokenKind::Comma = comma_token.kind else {
+                    reporter.error(comma_token.span, "expected comma");
                     return None;
                 };
-                let body = Box::new(parse_term(tokens, reporter)?);
+
+                let body = parse_term(tokens, start_span.join(comma_token.span), reporter)?;
+                let body = Box::new(body);
                 Term {
                     span: start_span.join(body.span),
                     kind: TermKind::Abstraction {
@@ -224,9 +269,9 @@ where
             }
             TokenKind::Delimited(tokens) => {
                 let mut tokens = tokens.into_iter().peekable();
-                let term = parse_term(&mut tokens, reporter)?;
-                if tokens.next().is_some() {
-                    reporter.error("trailing tokens");
+                let term = parse_term(&mut tokens, start_span, reporter)?;
+                if let Some(span) = tokens.map(|t| t.span).reduce(Span::join) {
+                    reporter.error(span, "trailing tokens");
                     return None;
                 }
                 term
@@ -248,7 +293,7 @@ where
     }
 
     if accumulator.is_none() {
-        reporter.error("expected term");
+        reporter.error(fallback_span, "expected term");
     }
 
     accumulator
@@ -256,27 +301,36 @@ where
 
 fn parse_universe_level<I: Iterator<Item = Token>>(
     tokens: &mut Peekable<I>,
+    fallback_span: Span,
     reporter: &mut impl Reporter,
-) -> Option<UniverseLevel> {
+) -> UniverseLevel {
     let Some(token) = tokens.next() else {
-        reporter.error("expected universe level");
-        return None;
+        reporter.error(fallback_span, "expected universe level");
+        return UniverseLevel {
+            kind: UniverseLevelKind::Error,
+            span: fallback_span,
+        };
     };
 
     let start_span = token.span;
 
     let mut accumulator = match token.kind {
         TokenKind::Natural(n) => {
-            let lit = parse_universe_level_lit(&n, start_span, reporter)?;
+            let kind = match parse_universe_level_lit(&n, start_span, reporter) {
+                Some(lit) => UniverseLevelKind::Lit(lit),
+                None => UniverseLevelKind::Error,
+            };
             UniverseLevel {
-                kind: UniverseLevelKind::Lit(lit),
+                kind,
                 span: start_span,
             }
         }
         TokenKind::Ident(ident) if ["max", "imax"].contains(&ident.as_str()) => {
             let i = ident.as_str() == "imax";
-            let left = Box::new(parse_universe_level(tokens, reporter)?);
-            let right = Box::new(parse_universe_level(tokens, reporter)?);
+            let left = parse_universe_level(tokens, start_span, reporter);
+            let right = parse_universe_level(tokens, start_span.join(left.span), reporter);
+            let left = Box::new(left);
+            let right = Box::new(right);
             UniverseLevel {
                 span: start_span.join(right.span),
                 kind: UniverseLevelKind::Max { i, left, right },
@@ -288,16 +342,18 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
         },
         TokenKind::Delimited(tokens) => {
             let mut tokens = tokens.into_iter().peekable();
-            let level = parse_universe_level(&mut tokens, reporter)?;
-            if tokens.next().is_some() {
-                reporter.error("trailing tokens");
-                return None;
+            let level = parse_universe_level(&mut tokens, start_span, reporter);
+            if let Some(span) = tokens.map(|t| t.span).reduce(Span::join) {
+                reporter.error(span, "trailing tokens");
             }
             level
         }
         _ => {
-            reporter.error("expected universe level");
-            return None;
+            reporter.error(start_span, "expected universe level");
+            UniverseLevel {
+                kind: UniverseLevelKind::Error,
+                span: start_span,
+            }
         }
     };
 
@@ -305,14 +361,20 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
         .peek()
         .map_or(false, |t| matches!(t.kind, TokenKind::Plus))
     {
-        tokens.next();
-        let Some(Token { kind: TokenKind::Natural(n), span }) = tokens.next() else {
-            reporter.error("expected natural after `+`");
-            return None;
-        };
-        let lit = parse_universe_level_lit(&n, span, reporter)?;
+        let plus_token = tokens.next().unwrap();
+
+        let lit = (|| {
+            let nat_token = expect_token(tokens, plus_token.span, reporter)?;
+            let TokenKind::Natural(n) = nat_token.kind else {
+                reporter.error(nat_token.span, "expected natural after `+`");
+                return None;
+            };
+            parse_universe_level_lit(&n, nat_token.span, reporter)
+        })();
         accumulator = UniverseLevel {
-            span: accumulator.span.join(span),
+            span: accumulator
+                .span
+                .join(lit.map_or(plus_token.span, |lit| lit.span)),
             kind: UniverseLevelKind::Addition {
                 left: Box::new(accumulator),
                 right: lit,
@@ -320,7 +382,7 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
         };
     }
 
-    Some(accumulator)
+    accumulator
 }
 
 fn parse_universe_level_lit(
@@ -329,19 +391,23 @@ fn parse_universe_level_lit(
     reporter: &mut impl Reporter,
 ) -> Option<UniverseLevelLit> {
     let Ok(value) = nat.parse::<u32>() else {
-        reporter.error("universe level too high");
+        reporter.error(span, "universe level too high");
         return None;
     };
     Some(UniverseLevelLit { value, span })
 }
 
-fn ident_token(token: lexer::Token) -> Option<Ident> {
-    match token.kind {
-        TokenKind::Ident(name) => Some(Ident {
-            name,
-            span: token.span,
-        }),
-        _ => None,
+fn expect_token(
+    tokens: &mut Peekable<impl Iterator<Item = Token>>,
+    fallback_span: Span,
+    reporter: &mut impl Reporter,
+) -> Option<Token> {
+    match tokens.next() {
+        Some(token) => Some(token),
+        None => {
+            reporter.error(fallback_span, "unexpected EOF");
+            None
+        }
     }
 }
 

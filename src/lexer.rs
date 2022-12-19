@@ -1,8 +1,10 @@
+#[derive(Debug)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
 }
 
+#[derive(Debug)]
 pub enum TokenKind {
     Colon,
     ColonEq,
@@ -34,6 +36,10 @@ fn lex_inner<'input>(
     loop {
         let span_start = string_offset(input.as_str(), original_input) + offset;
 
+        if depth != 0 && input.as_str().starts_with(')') {
+            return (tokens, input.as_str());
+        }
+
         let Some(c) = input.next() else { break };
 
         let kind = match c {
@@ -48,14 +54,21 @@ fn lex_inner<'input>(
             'λ' => TokenKind::Lambda,
             '+' => TokenKind::Plus,
             '(' => {
-                let (tokens, rest) = lex_inner(input.as_str(), depth + 1, span_start, reporter);
+                let (tokens, rest) = lex_inner(input.as_str(), depth + 1, span_start + 1, reporter);
                 input = rest.chars();
+                match input.next() {
+                    Some(')') => {}
+                    Some(_) => unreachable!(),
+                    None => {
+                        let span = Span {
+                            start: span_start,
+                            end: span_start + 1,
+                        };
+                        reporter.error(span, "missing closing bracket");
+                        break;
+                    }
+                }
                 TokenKind::Delimited(tokens)
-            }
-            ')' if depth != 0 => return (tokens, input.as_str()),
-            ')' => {
-                reporter.error("unexpected closing bracket");
-                continue;
             }
             c if is_xid_start(c) => {
                 let rest = input.as_str();
@@ -83,7 +96,11 @@ fn lex_inner<'input>(
             }
             ' ' | '\t' | '\n' => continue,
             _ => {
-                reporter.error(format_args!("unexpected character {c:?}"));
+                let span = Span {
+                    start: span_start,
+                    end: span_start + 1,
+                };
+                reporter.error(span, format_args!("unexpected character {c:?}"));
                 continue;
             }
         };
@@ -94,10 +111,6 @@ fn lex_inner<'input>(
         };
 
         tokens.push(Token { kind, span });
-    }
-
-    if depth != 0 {
-        reporter.error("missing closing bracket");
     }
 
     (tokens, input.as_str())

@@ -36,6 +36,7 @@ pub enum TermKind {
         left: Box<Term>,
         right: Box<Term>,
     },
+    Error,
 }
 
 impl Debug for TermKind {
@@ -49,6 +50,7 @@ impl Debug for TermKind {
                 body,
             } => write!(f, "({token:?} {type:?}, {body:?})"),
             Self::Application { left, right } => write!(f, "({left:?} {right:?})"),
+            Self::Error => f.write_str("[error]"),
         }
     }
 }
@@ -77,13 +79,14 @@ pub enum UniverseLevelKind {
     Variable(UniverseVariable),
     Addition {
         left: Box<UniverseLevel>,
-        right: UniverseLevelLit,
+        right: Option<UniverseLevelLit>,
     },
     Max {
         i: bool,
         left: Box<UniverseLevel>,
         right: Box<UniverseLevel>,
     },
+    Error,
 }
 
 impl Debug for UniverseLevelKind {
@@ -91,11 +94,16 @@ impl Debug for UniverseLevelKind {
         match self {
             Self::Lit(lit) => write!(f, "{lit}"),
             Self::Variable(variable) => match *variable {},
-            Self::Addition { left, right } => write!(f, "({left:?} + {right})"),
+            Self::Addition {
+                left,
+                right: Some(right),
+            } => write!(f, "({left:?} + {right})"),
+            Self::Addition { left, right: None } => write!(f, "({left:?} + [error])"),
             Self::Max { i, left, right } => {
                 let max = if *i { "imax" } else { "max" };
                 write!(f, "({max} {left:?} {right:?})")
             }
+            Self::Error => f.write_str("[error]"),
         }
     }
 }
@@ -144,7 +152,7 @@ fn resolve_term(
         parser::TermKind::Variable(v) => {
             let index = variables.iter().rev().position(|local| *local == v);
             let Some(index) = index else {
-                reporter.error(format_args!("unknown variable {}", v.as_str()));
+                reporter.error(term.span, format_args!("unknown variable {}", v.as_str()));
                 return None;
             };
 
@@ -173,6 +181,7 @@ fn resolve_term(
             let right = Box::new(resolve_term(variables, *right, reporter)?);
             TermKind::Application { left, right }
         }
+        parser::TermKind::Error => TermKind::Error,
     };
     let span = term.span;
     Some(Term { kind, span })
@@ -185,7 +194,10 @@ fn resolve_universe_level(
     let kind = match level.kind {
         parser::UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(n),
         parser::UniverseLevelKind::Variable(v) => {
-            reporter.error(format_args!("unknown universe variable {}", v.as_str()));
+            reporter.error(
+                level.span,
+                format_args!("unknown universe variable {}", v.as_str()),
+            );
             return None;
         }
         parser::UniverseLevelKind::Addition { left, right } => UniverseLevelKind::Addition {
@@ -197,6 +209,7 @@ fn resolve_universe_level(
             left: Box::new(resolve_universe_level(*left, reporter)?),
             right: Box::new(resolve_universe_level(*right, reporter)?),
         },
+        parser::UniverseLevelKind::Error => UniverseLevelKind::Error,
     };
     let span = level.span;
     Some(UniverseLevel { kind, span })

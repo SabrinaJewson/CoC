@@ -4,17 +4,20 @@ pub fn typecheck(definitions: Vec<Definition>, reporter: &mut impl Reporter) {
     for definition in definitions {
         let (type_type, r#type) = type_of(&mut variables, definition.r#type, reporter);
         let TermKind::Sort { .. } = type_type.kind else {
-            reporter.error("definition type is not a type");
+            reporter.error(r#type.span, "definition type is not a type");
             continue;
         };
 
         let body = definition.body.map(|body| {
             let (got_type, body) = type_of(&mut variables, body, reporter);
             if got_type != r#type {
-                reporter.error(format_args!(
-                    "type mismatch of definition:\n expected: {:?}\n      got: {:?}",
-                    r#type, got_type,
-                ));
+                reporter.error(
+                    body.span,
+                    format_args!(
+                        "type mismatch of definition:\n expected: {:?}\n      got: {:?}",
+                        r#type, got_type,
+                    ),
+                );
             }
             body
         });
@@ -36,10 +39,10 @@ fn type_of(
             let raised_level = UniverseLevel {
                 kind: UniverseLevelKind::Addition {
                     left: Box::new(level.clone()),
-                    right: UniverseLevelLit {
+                    right: Some(UniverseLevelLit {
                         value: 1,
                         span: level.span,
-                    },
+                    }),
                 },
                 span: level.span,
             };
@@ -75,7 +78,10 @@ fn type_of(
             let param_level = match param_type_type.kind {
                 TermKind::Sort { level } => level,
                 kind => {
-                    reporter.error(format_args!("{token:?} parameter is not a type"));
+                    reporter.error(
+                        param_type.span,
+                        format_args!("{token:?} parameter is not a type"),
+                    );
 
                     // Guess that the user meant to write the _type_ of the term they wrote
                     // e.g. convert (λ x : 5, x) to (λ x : nat, x)
@@ -99,7 +105,7 @@ fn type_of(
                     let body_level = match body_type.kind {
                         TermKind::Sort { level } => level,
                         kind => {
-                            reporter.error("Π body is not a type");
+                            reporter.error(body.span, "Π body is not a type");
 
                             // Guess that the user meant to write the _type_ of the term they wrote.
                             // e.g. convert (Π x : nat, 6) to (Π x : nat, nat)
@@ -154,13 +160,13 @@ fn type_of(
             let (right_type, right) = type_of(variables, *right, reporter);
 
             let TermKind::Abstraction { token: AbstractionToken::Pi, r#type: param_type, body: ret_type } = left_type.kind else {
-                reporter.error("left hand side of application is not a function");
+                reporter.error(left.span, "left hand side of application is not a function");
                 // Recover by ignoring the application
                 return (left_type, left);
             };
 
             if *param_type != right_type {
-                reporter.error(format_args!(
+                reporter.error(right.span, format_args!(
                     "function application type mismatch on {:?} of {:?}\n expected: {:?}\n      got: {:?}",
                     left, right,
                     param_type, right_type
@@ -186,6 +192,12 @@ fn type_of(
                 term.kind = TermKind::Application { left, right };
             };
         }
+        TermKind::Error => {
+            r#type = Term {
+                kind: TermKind::Error,
+                span: Span::none(),
+            }
+        }
     }
 
     (r#type, term)
@@ -195,7 +207,10 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
     let kind = match &level.kind {
         UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(*n),
         UniverseLevelKind::Variable(v) => match *v {},
-        UniverseLevelKind::Addition { left, right } => {
+        UniverseLevelKind::Addition {
+            left,
+            right: Some(right),
+        } => {
             match reduce_universe_level(left, reporter).kind {
                 UniverseLevelKind::Lit(left) => {
                     let lit = add_universe_level_lit(left, *right, reporter);
@@ -204,14 +219,25 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
                 UniverseLevelKind::Variable(v) => match v {},
                 UniverseLevelKind::Addition {
                     left,
-                    right: right_2,
+                    right: Some(right_2),
                 } => {
-                    let right = add_universe_level_lit(*right, right_2, reporter);
+                    let right = Some(add_universe_level_lit(*right, right_2, reporter));
                     UniverseLevelKind::Addition { left, right }
                 }
                 UniverseLevelKind::Max { .. } => todo!(),
+                // Propagate the errors
+                UniverseLevelKind::Error
+                | UniverseLevelKind::Addition {
+                    left: _,
+                    right: None,
+                } => UniverseLevelKind::Error,
             }
         }
+        // Propagate the errors
+        UniverseLevelKind::Addition {
+            left: _,
+            right: None,
+        } => UniverseLevelKind::Error,
         UniverseLevelKind::Max { i, left, right } => {
             let left = reduce_universe_level(left, reporter);
             let right = reduce_universe_level(right, reporter);
@@ -229,6 +255,7 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
                 _ => todo!(),
             }
         }
+        UniverseLevelKind::Error => UniverseLevelKind::Error,
     };
     let span = level.span;
     UniverseLevel { kind, span }
@@ -239,14 +266,12 @@ fn add_universe_level_lit(
     right: UniverseLevelLit,
     reporter: &mut impl Reporter,
 ) -> UniverseLevelLit {
-    let sum = left.value.checked_add(right.value).unwrap_or_else(|| {
-        reporter.error("universe too large");
+    let span = left.span.join(right.span);
+    let value = left.value.checked_add(right.value).unwrap_or_else(|| {
+        reporter.error(span, "universe too large");
         u32::MAX
     });
-    UniverseLevelLit {
-        value: sum,
-        span: left.span.join(right.span),
-    }
+    UniverseLevelLit { value, span }
 }
 
 use crate::parser::AbstractionToken;

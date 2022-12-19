@@ -15,13 +15,13 @@ impl Span {
     pub fn join(self, other: Self) -> Self {
         Self {
             start: usize::min(self.start, other.start),
-            end: usize::min(self.end, other.end),
+            end: usize::max(self.end, other.end),
         }
     }
 }
 
 pub trait Reporter {
-    fn error(&mut self, error: impl Display);
+    fn error(&mut self, span: Span, error: impl Display);
 }
 
 use std::fmt::Display;
