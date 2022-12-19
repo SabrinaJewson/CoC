@@ -1,4 +1,9 @@
-pub enum Token {
+pub struct Token {
+    pub kind: TokenKind,
+    pub span: Span,
+}
+
+pub enum TokenKind {
     Colon,
     ColonEq,
     Dot,
@@ -12,32 +17,37 @@ pub enum Token {
 }
 
 pub fn lex(input: &str, reporter: &mut impl Reporter) -> Vec<Token> {
-    let (tokens, rest) = lex_inner(input, 0, reporter);
+    let (tokens, rest) = lex_inner(input, 0, 0, reporter);
     assert_eq!(rest, "");
     tokens
 }
 
 fn lex_inner<'input>(
-    input: &'input str,
+    original_input: &'input str,
     depth: usize,
+    offset: usize,
     reporter: &mut impl Reporter,
 ) -> (Vec<Token>, &'input str) {
     let mut tokens = Vec::new();
-    let mut input = input.chars();
+    let mut input = original_input.chars();
 
-    while let Some(c) = input.next() {
-        tokens.push(match c {
-            ':' => Token::Colon,
-            '≔' => Token::ColonEq,
-            '.' => Token::Dot,
-            ',' => Token::Comma,
-            'Π' => Token::Pi,
-            'λ' => Token::Lambda,
-            '+' => Token::Plus,
+    loop {
+        let span_start = string_offset(input.as_str(), original_input) + offset;
+
+        let Some(c) = input.next() else { break };
+
+        let kind = match c {
+            ':' => TokenKind::Colon,
+            '≔' => TokenKind::ColonEq,
+            '.' => TokenKind::Dot,
+            ',' => TokenKind::Comma,
+            'Π' => TokenKind::Pi,
+            'λ' => TokenKind::Lambda,
+            '+' => TokenKind::Plus,
             '(' => {
-                let (tokens, rest) = lex_inner(input.as_str(), depth + 1, reporter);
+                let (tokens, rest) = lex_inner(input.as_str(), depth + 1, span_start, reporter);
                 input = rest.chars();
-                Token::Delimited(tokens)
+                TokenKind::Delimited(tokens)
             }
             ')' if depth != 0 => return (tokens, input.as_str()),
             ')' => {
@@ -53,7 +63,7 @@ fn lex_inner<'input>(
                 let mut ident = String::with_capacity(c.len_utf8() + ident_continue.len());
                 ident.push(c);
                 ident.push_str(ident_continue);
-                Token::Ident(Ident::new_box(ident.into_boxed_str()).unwrap())
+                TokenKind::Ident(Ident::new_box(ident.into_boxed_str()).unwrap())
             }
             '0'..='9' => {
                 let rest = input.as_str();
@@ -66,21 +76,28 @@ fn lex_inner<'input>(
                 let mut ident = String::with_capacity(1 + int_continue.len());
                 ident.push(c);
                 ident.push_str(int_continue);
-                Token::Natural(ident)
+                TokenKind::Natural(ident)
             }
             ' ' | '\t' | '\n' => continue,
             _ => {
                 reporter.report(format_args!("unexpected character {c:?}"));
                 continue;
             }
-        });
+        };
+
+        let span = Span {
+            start: span_start,
+            end: string_offset(input.as_str(), original_input) + offset,
+        };
+
+        tokens.push(Token { kind, span });
     }
 
     if depth != 0 {
         reporter.report("missing closing bracket");
     }
 
-    (tokens, "")
+    (tokens, input.as_str())
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -115,7 +132,12 @@ impl ToOwned for Ident {
     }
 }
 
+fn string_offset(s: &str, base: &str) -> usize {
+    (s as *const str as *const () as usize) - (base as *const str as *const () as usize)
+}
+
 use crate::reporter::Reporter;
+use crate::reporter::Span;
 use std::mem;
 use unicode_ident::is_xid_continue;
 use unicode_ident::is_xid_start;
