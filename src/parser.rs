@@ -101,9 +101,8 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
     let mut items = Vec::new();
 
     while tokens.peek().is_some() {
-        if let Some(item) = parse_item(&mut tokens, reporter) {
-            items.push(item);
-        }
+        let Some(item) = parse_item(&mut tokens, reporter) else { break };
+        items.push(item);
     }
 
     Source { items }
@@ -122,15 +121,7 @@ fn parse_item(
     };
     Some(match keyword.as_str() {
         kw::DEFINITION | kw::CONSTANT => {
-            let ident_token = expect_token(tokens, start_span, reporter)?;
-            let TokenKind::Ident(ident) = ident_token.kind else {
-                reporter.error(ident_token.span, "expected identifier");
-                return None;
-            };
-            let ident = Ident {
-                name: ident,
-                span: ident_token.span,
-            };
+            let ident = parse_ident(tokens, start_span, reporter)?;
 
             let colon_token = expect_token(tokens, start_span.join(ident.span), reporter)?;
             let TokenKind::Colon = colon_token.kind else {
@@ -185,14 +176,11 @@ mod kw {
     pub const CONSTANT: &str = "constant";
 }
 
-fn parse_term<I>(
-    tokens: &mut Peekable<I>,
+fn parse_term(
+    tokens: &mut Peekable<impl Iterator<Item = Token>>,
     fallback_span: Span,
     reporter: &mut impl Reporter,
-) -> Option<Term>
-where
-    I: Iterator<Item = Token>,
-{
+) -> Option<Term> {
     let mut accumulator: Option<Term> = None;
 
     while let Some(peeked) = tokens.peek() {
@@ -226,15 +214,7 @@ where
                 span: start_span,
             },
             token @ (TokenKind::Lambda | TokenKind::Pi) => {
-                let variable_token = expect_token(tokens, start_span, reporter)?;
-                let TokenKind::Ident(variable) = variable_token.kind else {
-                    reporter.error(variable_token.span, "expected identifier");
-                    return None;
-                };
-                let variable = Ident {
-                    name: variable,
-                    span: variable_token.span,
-                };
+                let variable = parse_ident(tokens, start_span, reporter)?;
 
                 let colon_token = expect_token(tokens, start_span.join(variable.span), reporter)?;
                 let TokenKind::Colon = colon_token.kind else {
@@ -269,12 +249,18 @@ where
             }
             TokenKind::Delimited(tokens) => {
                 let mut tokens = tokens.into_iter().peekable();
-                let term = parse_term(&mut tokens, start_span, reporter)?;
-                if let Some(span) = tokens.map(|t| t.span).reduce(Span::join) {
-                    reporter.error(span, "trailing tokens");
-                    return None;
-                }
-                term
+                let term = (|| {
+                    let term = parse_term(&mut tokens, start_span, reporter)?;
+                    if let Some(span) = tokens.map(|t| t.span).reduce(Span::join) {
+                        reporter.error(span, "trailing tokens");
+                        return None;
+                    }
+                    Some(term)
+                })();
+                term.unwrap_or(Term {
+                    kind: TermKind::Error,
+                    span: start_span,
+                })
             }
             not_term!() => unreachable!(),
         };
@@ -383,6 +369,22 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
     }
 
     accumulator
+}
+
+fn parse_ident(
+    tokens: &mut Peekable<impl Iterator<Item = Token>>,
+    fallback_span: Span,
+    reporter: &mut impl Reporter,
+) -> Option<Ident> {
+    let ident_token = expect_token(tokens, fallback_span, reporter)?;
+    let TokenKind::Ident(ident) = ident_token.kind else {
+        reporter.error(ident_token.span, "expected identifier");
+        return None;
+    };
+    Some(Ident {
+        name: ident,
+        span: ident_token.span,
+    })
 }
 
 fn parse_universe_level_lit(
