@@ -5,11 +5,19 @@ pub struct Definition {
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Term {
-    Sort { level: UniverseLevel },
+    Sort {
+        level: UniverseLevel,
+    },
     Variable(Variable),
-    Abstraction { r#type: Box<Term>, body: Box<Term> },
-    Pi { r#type: Box<Term>, body: Box<Term> },
-    Application { left: Box<Term>, right: Box<Term> },
+    Abstraction {
+        kind: AbstractionKind,
+        r#type: Box<Term>,
+        body: Box<Term>,
+    },
+    Application {
+        left: Box<Term>,
+        right: Box<Term>,
+    },
 }
 
 impl Debug for Term {
@@ -17,8 +25,7 @@ impl Debug for Term {
         match self {
             Self::Sort { level } => write!(f, "Sort {level:?}"),
             Self::Variable(v) => write!(f, "{}", v.0),
-            Self::Abstraction { r#type, body } => write!(f, "(λ {type:?}, {body:?})"),
-            Self::Pi { r#type, body } => write!(f, "(Π {type:?}, {body:?})"),
+            Self::Abstraction { kind, r#type, body } => write!(f, "({kind:?} {type:?}, {body:?})"),
             Self::Application { left, right } => write!(f, "({left:?} {right:?})"),
         }
     }
@@ -90,6 +97,7 @@ fn resolve_term(
             Term::Variable(Variable(index))
         }
         parser::Term::Abstraction {
+            kind,
             variable,
             r#type,
             body,
@@ -100,20 +108,7 @@ fn resolve_term(
             let body = Box::new(resolve_term(variables, *body, reporter)?);
             variables.pop();
 
-            Term::Abstraction { r#type, body }
-        }
-        parser::Term::Pi {
-            variable,
-            r#type,
-            body,
-        } => {
-            let r#type = Box::new(resolve_term(variables, *r#type, reporter)?);
-
-            variables.push(variable);
-            let body = Box::new(resolve_term(variables, *body, reporter)?);
-            variables.pop();
-
-            Term::Pi { r#type, body }
+            Term::Abstraction { kind, r#type, body }
         }
         parser::Term::Application { left, right } => {
             let left = Box::new(resolve_term(variables, *left, reporter)?);
@@ -153,15 +148,11 @@ fn replace_inner(term: &Term, with: &Term, depth: usize) -> Term {
     match term {
         Term::Variable(v) if v.0 == depth => increase_free(with, depth),
         Term::Variable(v) if v.0 > depth => Term::Variable(Variable(v.0 - 1)),
-        Term::Abstraction { r#type, body } => {
+        Term::Abstraction { kind, r#type, body } => {
+            let &kind = kind;
             let r#type = Box::new(replace_inner(r#type, with, depth));
             let body = Box::new(replace_inner(body, with, depth + 1));
-            Term::Abstraction { r#type, body }
-        }
-        Term::Pi { r#type, body } => {
-            let r#type = Box::new(replace_inner(r#type, with, depth));
-            let body = Box::new(replace_inner(body, with, depth + 1));
-            Term::Pi { r#type, body }
+            Term::Abstraction { kind, r#type, body }
         }
         Term::Application { left, right } => {
             let left = Box::new(replace_inner(left, with, depth));
@@ -179,15 +170,11 @@ pub fn increase_free(term: &Term, by: usize) -> Term {
 fn increase_free_inner(term: &Term, by: usize, lowest_free: usize) -> Term {
     match term {
         Term::Variable(v) if v.0 >= lowest_free => Term::Variable(Variable(v.0 + by)),
-        Term::Abstraction { r#type, body } => {
+        Term::Abstraction { kind, r#type, body } => {
+            let &kind = kind;
             let r#type = Box::new(increase_free_inner(r#type, by, lowest_free));
             let body = Box::new(increase_free_inner(body, by, lowest_free + 1));
-            Term::Abstraction { r#type, body }
-        }
-        Term::Pi { r#type, body } => {
-            let r#type = Box::new(increase_free_inner(r#type, by, lowest_free));
-            let body = Box::new(increase_free_inner(body, by, lowest_free + 1));
-            Term::Pi { r#type, body }
+            Term::Abstraction { kind, r#type, body }
         }
         Term::Application { left, right } => {
             let left = Box::new(increase_free_inner(left, by, lowest_free));
@@ -200,6 +187,7 @@ fn increase_free_inner(term: &Term, by: usize, lowest_free: usize) -> Term {
 
 use crate::lexer::Ident;
 use crate::parser;
+use crate::parser::AbstractionKind;
 use crate::reporter::Reporter;
 use core::fmt;
 use std::fmt::Debug;

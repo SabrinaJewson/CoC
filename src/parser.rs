@@ -18,11 +18,7 @@ pub enum Term {
     },
     Variable(Box<Ident>),
     Abstraction {
-        variable: Box<Ident>,
-        r#type: Box<Term>,
-        body: Box<Term>,
-    },
-    Pi {
+        kind: AbstractionKind,
         variable: Box<Ident>,
         r#type: Box<Term>,
         body: Box<Term>,
@@ -31,6 +27,21 @@ pub enum Term {
         left: Box<Term>,
         right: Box<Term>,
     },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AbstractionKind {
+    Pi,
+    Lambda,
+}
+
+impl Debug for AbstractionKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Pi => "Π",
+            Self::Lambda => "λ",
+        })
+    }
 }
 
 pub enum UniverseLevel {
@@ -130,7 +141,7 @@ where
                 Term::Sort { level }
             }
             Token::Ident(ident) => Term::Variable(ident),
-            Token::Lambda => {
+            token @ (Token::Lambda | Token::Pi) => {
                 let Some(Token::Ident(variable)) = tokens.next() else {
                     reporter.report("expected identifier");
                     return None;
@@ -146,27 +157,11 @@ where
                 };
                 let body = Box::new(parse_term(tokens, reporter)?);
                 Term::Abstraction {
-                    variable,
-                    r#type,
-                    body,
-                }
-            }
-            Token::Pi => {
-                let Some(Token::Ident(variable)) = tokens.next() else {
-                    reporter.report("expected identifier");
-                    return None;
-                };
-                let Some(Token::Colon) = tokens.next() else {
-                    reporter.report("expected colon");
-                    return None;
-                };
-                let r#type = Box::new(parse_term(tokens, reporter)?);
-                let Some(Token::Comma) = tokens.next() else {
-                    reporter.report("expected comma");
-                    return None;
-                };
-                let body = Box::new(parse_term(tokens, reporter)?);
-                Term::Pi {
+                    kind: match token {
+                        Token::Pi => AbstractionKind::Pi,
+                        Token::Lambda => AbstractionKind::Lambda,
+                        _ => unreachable!(),
+                    },
                     variable,
                     r#type,
                     body,
@@ -257,4 +252,7 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
 use crate::lexer::Ident;
 use crate::lexer::Token;
 use crate::reporter::Reporter;
+use std::fmt;
+use std::fmt::Debug;
+use std::fmt::Formatter;
 use std::iter::Peekable;

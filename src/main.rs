@@ -66,62 +66,53 @@ fn type_of(
             };
         }
         Term::Abstraction {
+            kind,
             r#type: param_type,
             body,
         } => {
             let (param_type_type, param_type) = type_of(variables, *param_type, reporter);
 
-            if !matches!(param_type_type, Term::Sort { .. }) {
-                reporter.report("λ parameter is not a type");
-            }
+            let Term::Sort { level: param_level } = param_type_type else {
+                reporter.report(format_args!("{kind:?} parameter is not a type"));
+                todo!()
+            };
 
             variables.push((param_type, None));
             let (body_type, body) = type_of(variables, *body, reporter);
             let param_type = Box::new(variables.pop().unwrap().0);
 
-            r#type = Term::Pi {
-                r#type: param_type.clone(),
-                // TODO: Are the de bruijn indices correct here?
-                body: Box::new(body_type),
-            };
+            match kind {
+                // The type of the Π type is Sort imax u v
+                AbstractionKind::Pi => {
+                    let Term::Sort { level: body_level } = body_type else {
+                        reporter.report("Π body is not a type");
+                        todo!()
+                    };
+
+                    let level = UniverseLevel::Max {
+                        i: true,
+                        left: Box::new(param_level),
+                        right: Box::new(body_level),
+                    };
+
+                    r#type = Term::Sort {
+                        level: reduce_universe_level(&level, reporter),
+                    };
+                }
+                // The type of the λ type is the Π type
+                AbstractionKind::Lambda => {
+                    r#type = Term::Abstraction {
+                        kind: AbstractionKind::Pi,
+                        r#type: param_type.clone(),
+                        // TODO: Are the de bruijn indices correct here?
+                        body: Box::new(body_type),
+                    };
+                }
+            }
 
             reduced = Term::Abstraction {
+                kind,
                 r#type: param_type,
-                body: Box::new(body),
-            };
-        }
-        Term::Pi {
-            r#type: param_type,
-            body,
-        } => {
-            let (input_type_type, input_type) = type_of(variables, *param_type, reporter);
-
-            let Term::Sort { level: input_level } = input_type_type else {
-                reporter.report("Π parameter is not a type");
-                todo!()
-            };
-
-            variables.push((input_type, None));
-            let (body_type, body) = type_of(variables, *body, reporter);
-            let input_type = Box::new(variables.pop().unwrap().0);
-
-            let Term::Sort { level: body_level } = body_type else {
-                reporter.report("Π body is not a type");
-                todo!()
-            };
-
-            let level = UniverseLevel::Max {
-                i: true,
-                left: Box::new(input_level),
-                right: Box::new(body_level),
-            };
-
-            r#type = Term::Sort {
-                level: reduce_universe_level(&level, reporter),
-            };
-
-            reduced = Term::Pi {
-                r#type: input_type,
                 body: Box::new(body),
             };
         }
@@ -129,7 +120,7 @@ fn type_of(
             let (left_type, left) = type_of(variables, *left, reporter);
             let (right_type, right) = type_of(variables, *right, reporter);
 
-            let Term::Pi { r#type: param_type, body: ret_type } = &left_type else {
+            let Term::Abstraction { kind: AbstractionKind::Pi, r#type: param_type, body: ret_type } = &left_type else {
                 reporter.report("left hand side of application is not a function");
                 todo!()
             };
@@ -147,7 +138,12 @@ fn type_of(
             (_, r#type) = type_of(variables, unreduced_type, reporter);
 
             // TODO: recursive replacing; is this right?
-            reduced = if let Term::Abstraction { r#type, body } = left {
+            reduced = if let Term::Abstraction {
+                kind: AbstractionKind::Lambda,
+                r#type,
+                body,
+            } = left
+            {
                 assert_eq!(*r#type, **param_type);
                 let unreduced = variables::replace(&body, &right);
                 type_of(variables, unreduced, reporter).1
@@ -223,6 +219,7 @@ mod variables;
 
 use anyhow::Context as _;
 use clap::Parser as _;
+use parser::AbstractionKind;
 use reporter::Reporter;
 use std::fmt::Display;
 use std::fs;
