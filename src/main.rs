@@ -139,7 +139,8 @@ fn type_of(
 
             let Term::Abstraction { kind: AbstractionKind::Pi, r#type: param_type, body: ret_type } = &left_type else {
                 reporter.report("left hand side of application is not a function");
-                todo!()
+                // Recover by ignoring the application
+                return (left_type, left);
             };
 
             if **param_type != right_type {
@@ -148,7 +149,6 @@ fn type_of(
                     left, right,
                     param_type, right_type
                 ));
-                todo!()
             }
 
             let unreduced_type = variables::replace(ret_type, &right);
@@ -181,10 +181,10 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
         UniverseLevel::Variable(v) => match *v {},
         UniverseLevel::Addition { left, right } => match reduce_universe_level(left, reporter) {
             UniverseLevel::Number(left) => {
-                let Some(sum) = left.checked_add(*right) else {
-                        reporter.report("universe too large");
-                        todo!();
-                    };
+                let sum = left.checked_add(*right).unwrap_or_else(|| {
+                    reporter.report("universe too large");
+                    u32::MAX
+                });
                 UniverseLevel::Number(sum)
             }
             UniverseLevel::Variable(v) => match v {},
@@ -192,10 +192,10 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
                 left,
                 right: right_2,
             } => {
-                let Some(right) = right.checked_add(right_2) else {
-                        reporter.report("universe too large");
-                        todo!();
-                    };
+                let right = right.checked_add(right_2).unwrap_or_else(|| {
+                    reporter.report("universe too large");
+                    u32::MAX
+                });
                 UniverseLevel::Addition { left, right }
             }
             UniverseLevel::Max { .. } => todo!(),
