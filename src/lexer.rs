@@ -146,7 +146,7 @@ fn lex_inner<'input>(
             _ => {
                 let span = Span {
                     start: span_start,
-                    end: span_start + 1,
+                    end: span_start + c.len_utf8(),
                 };
                 reporter.error(span, format_args!("unexpected character {c:?}"));
                 continue;

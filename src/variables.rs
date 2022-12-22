@@ -20,6 +20,87 @@ pub struct Term {
     pub kind: TermKind,
 }
 
+impl Term {
+    /// Call a function on every free variable of this term.
+    pub fn with_free(&mut self, mut f: impl FnMut(usize) -> TermKind) {
+        let mut to_process = vec![(self, Variable(0))];
+        while let Some((term, lowest_free)) = to_process.pop() {
+            // This is split into its own `match` to work around Polonius
+            match &term.kind {
+                // Only modify free variables
+                TermKind::Variable(v) if *v >= lowest_free => {
+                    term.kind = f(v.0 - lowest_free.0);
+                    term.increase_free(lowest_free.0);
+                    continue;
+                }
+                _ => {}
+            }
+
+            match &mut term.kind {
+                // Do not modify bound variables
+                TermKind::Variable(_) => {}
+                TermKind::Abstraction {
+                    token: _,
+                    r#type,
+                    body,
+                } => {
+                    to_process.push((r#type, lowest_free));
+                    to_process.push((body, Variable(lowest_free.0 + 1)));
+                }
+                TermKind::Application { left, right } => {
+                    to_process.push((left, lowest_free));
+                    to_process.push((right, lowest_free));
+                }
+                // Sorts and errors do not contain variables
+                TermKind::Sort { .. } | TermKind::Error => {}
+            }
+        }
+    }
+
+    /// Increase the values of all free variables in the given expression.
+    pub fn increase_free(&mut self, by: usize) {
+        self.increase_free_from(by, Variable(0));
+    }
+
+    /// Increase the values of all free variables in the given expression.
+    pub fn increase_free_from(&mut self, by: usize, lowest_free: Variable) {
+        let mut to_process = vec![(self, lowest_free)];
+        while let Some((term, lowest_free)) = to_process.pop() {
+            match &mut term.kind {
+                // Do not modify bound variables
+                TermKind::Variable(v) if *v < lowest_free => {}
+                // Add to free variables
+                TermKind::Variable(v) => v.0 += by,
+                TermKind::Abstraction {
+                    token: _,
+                    r#type,
+                    body,
+                } => {
+                    to_process.push((r#type, lowest_free));
+                    to_process.push((body, Variable(lowest_free.0 + 1)));
+                }
+                TermKind::Application { left, right } => {
+                    to_process.push((left, lowest_free));
+                    to_process.push((right, lowest_free));
+                }
+                // Sorts and errors do not contain variables
+                TermKind::Sort { .. } | TermKind::Error => {}
+            }
+        }
+    }
+
+    /// Replace the lowest free variable in the given term with the replacement.
+    pub fn replace(&mut self, with: &Term) {
+        self.with_free(|v| {
+            if v == 0 {
+                with.kind.clone()
+            } else {
+                TermKind::Variable(Variable(v - 1))
+            }
+        })
+    }
+}
+
 impl PartialEq for Term {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind
@@ -119,7 +200,7 @@ impl Debug for UniverseLevelKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Variable(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,8 +245,8 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut impl Reporter) ->
                     else { continue };
 
                 // Bring the type name in scope for the constructors
+                let ident_index = variables.len();
                 variables.push(inductive.ident.name);
-                let ident_index = variables.len() - 1;
 
                 let mut constructors = Vec::new();
                 let mut constructor_idents = Vec::new();
@@ -182,12 +263,12 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut impl Reporter) ->
                     );
                 }
 
+                // Take the type name and parameters out of scope
                 let ident = variables.pop().unwrap();
-                let recursor_name = lexer::Ident::new_string(format!("{ident}_rec")).unwrap();
-
-                // Take the parameters out of scope
                 variables.truncate(variables.len() - params.len());
 
+                // Add the type name, constructors and recursor to the global scope
+                let recursor_name = lexer::Ident::new_string(format!("{ident}_rec")).unwrap();
                 variables.push(ident);
                 variables.extend(constructor_idents);
                 variables.push(recursor_name);
@@ -277,72 +358,6 @@ fn resolve_universe_level(
     };
     let span = level.span;
     Some(UniverseLevel { kind, span })
-}
-
-pub fn replace(term: Term, with: &Term) -> Term {
-    replace_inner(term, with, 0)
-}
-
-fn replace_inner(term: Term, with: &Term, depth: usize) -> Term {
-    let kind = match term.kind {
-        // The substitution itself
-        TermKind::Variable(v) if v.0 == depth => return increase_free(with, depth),
-        // Decrease free variables indices
-        TermKind::Variable(v) if v.0 > depth => TermKind::Variable(Variable(v.0 - 1)),
-        TermKind::Abstraction {
-            token,
-            r#type,
-            body,
-        } => {
-            let r#type = Box::new(replace_inner(*r#type, with, depth));
-            let body = Box::new(replace_inner(*body, with, depth + 1));
-            TermKind::Abstraction {
-                token,
-                r#type,
-                body,
-            }
-        }
-        TermKind::Application { left, right } => {
-            let left = Box::new(replace_inner(*left, with, depth));
-            let right = Box::new(replace_inner(*right, with, depth));
-            TermKind::Application { left, right }
-        }
-        _ => term.kind,
-    };
-    let span = term.span;
-    Term { kind, span }
-}
-
-pub fn increase_free(term: &Term, by: usize) -> Term {
-    increase_free_inner(term, by, 0)
-}
-
-fn increase_free_inner(term: &Term, by: usize, lowest_free: usize) -> Term {
-    let kind = match &term.kind {
-        TermKind::Variable(v) if v.0 >= lowest_free => TermKind::Variable(Variable(v.0 + by)),
-        TermKind::Abstraction {
-            token,
-            r#type,
-            body,
-        } => {
-            let &token = token;
-            let r#type = Box::new(increase_free_inner(r#type, by, lowest_free));
-            let body = Box::new(increase_free_inner(body, by, lowest_free + 1));
-            TermKind::Abstraction {
-                token,
-                r#type,
-                body,
-            }
-        }
-        TermKind::Application { left, right } => {
-            let left = Box::new(increase_free_inner(left, by, lowest_free));
-            let right = Box::new(increase_free_inner(right, by, lowest_free));
-            TermKind::Application { left, right }
-        }
-        _ => term.kind.clone(),
-    };
-    let span = term.span;
-    Term { span, kind }
 }
 
 use crate::lexer;

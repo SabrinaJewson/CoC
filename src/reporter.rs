@@ -12,7 +12,17 @@ impl Span {
         }
     }
 
+    pub fn is_none(self) -> bool {
+        let c = self.start == usize::MAX;
+        if c {
+            assert_eq!(self.end, usize::MAX);
+        }
+        c
+    }
+
     pub fn join(self, other: Self) -> Self {
+        assert!(!self.is_none());
+        assert!(!other.is_none());
         Self {
             start: usize::min(self.start, other.start),
             end: usize::max(self.end, other.end),

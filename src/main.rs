@@ -27,23 +27,25 @@ mod cli_reporter {
                 source,
             }
         }
+
+        fn to_char(&self, i: usize) -> usize {
+            self.source
+                .char_indices()
+                .position(|(j, _)| j == i)
+                .expect("span out of range")
+        }
     }
     impl Reporter for CliReporter<'_> {
         fn error(&mut self, span: Span, error: impl Display) {
-            let start = self
-                .source
-                .char_indices()
-                .position(|(i, _)| i == span.start)
-                .unwrap();
-            let end = self
-                .source
-                .char_indices()
-                .position(|(i, _)| i == span.end)
-                .unwrap();
+            let range = if !span.is_none() {
+                self.to_char(span.start)..self.to_char(span.end)
+            } else {
+                0..self.source.len()
+            };
 
-            let _ = Report::build(ariadne::ReportKind::Error, self.cache.0, start)
+            let _ = Report::build(ariadne::ReportKind::Error, self.cache.0, range.start)
                 .with_message(&error)
-                .with_label(Label::new((self.cache.0, start..end)).with_message(&error))
+                .with_label(Label::new((self.cache.0, range)).with_message(&error))
                 .finish()
                 .eprint(&mut self.cache);
         }
