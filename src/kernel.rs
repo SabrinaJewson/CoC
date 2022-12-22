@@ -159,8 +159,8 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     //
                     // Globals TypeFormer C₁…Cₙ P₁…Pₘ C p₁…pᵢ A₁…Aₗ R₁…Rᵣ
                     //                      \_/ \___/ V \___/ \___/ \___/
-                    //                  (n−1-i)+  n + 1 + i  +  l  +  r = 2n + l + r
-                    let constructor_index = 2 * params.len() + minor_params;
+                    //                  (n−1−i)+  m + 1 + i  +  l  +  r = n + m + l + r
+                    let constructor_index = constructors.len() + params.len() + minor_params;
                     let mut applied = var_term(Span::none(), constructor_index);
                     // Apply the parameters.
                     for j in (0..params.len()).rev() {
@@ -179,7 +179,13 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                         applied = app_term(Span::none(), applied, param);
                     }
 
-                    let mut minor_premise = applied;
+                    // Get the motive, so we can apply the fully constructed value to it.
+                    //
+                    // Globals TypeFormer C₁…Cₙ P₁…Pₘ C p₁…pᵢ A₁…Aₗ R₁…Rᵣ
+                    //                                  \___/ \___/ \___/
+                    //                                    i  +  l  +  r = i + l + r
+                    let motive = var_term(Span::none(), i + minor_params);
+                    let mut minor_premise = app_term(Span::none(), motive, applied);
 
                     // Construct parameters to the minor premise for each recursive parameter.
                     for (t, &(j, param_params)) in
@@ -190,7 +196,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                         // Adjust the parameter type for the new context.
                         // Old context: Globals                  P₁…Pₘ  Type   A₁…Aⱼ
                         // New context: Globals TypeFormer C₁…Cₙ P₁…Pₘ C p₁…pᵢ A₁…Aₗ R₁…Rₜ
-                        param_type.with_free(|v| {
+                        param_type.kind.substitute_free_with_depth(|v, depth| {
                             // If `v` is referencing a previous constructor parameter, offset it,
                             // taking into account that it used to have fewer constructor
                             // parameters and no recursive parameters in scope.
@@ -199,7 +205,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                             //                                        \___/ \___/
                             //                                        l − j + t
                             let Some(v) = v.checked_sub(j) else {
-                                let v = v + constructor.params.len() - j + t;
+                                let v = v + constructor.params.len() - j + t + depth;
                                 return TermKind::Variable(Variable(v));
                             };
                             // If `v` is referencing the type itself, we substitute in our motive
@@ -210,10 +216,12 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                                 // Globals TypeFormer C₁…Cₙ P₁…Pₘ C p₁…pᵢ A₁…Aₗ R₁…Rₜ
                                 //                                         \__/ \___/
                                 //                                        l−1−j + t
-                                let param_v = constructor.params.len() - 1 - j + t;
+                                let param_v = constructor.params.len() - 1 - j + t + depth;
                                 let mut param = var_term(Span::none(), param_v);
 
                                 // Applies to the constructor parameter each value.
+                                // Note that we’re accessing bound variables here, so we don’t add
+                                // `depth`.
                                 for k in (0..param_params).rev() {
                                     let param_param = var_term(Span::none(), k);
                                     param = app_term(Span::none(), param, param_param);
@@ -224,7 +232,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                                 // Globals TypeFormer C₁…Cₙ P₁…Pₘ C p₁…pᵢ A₁…Aₗ R₁…Rₜ
                                 //                                  \___/ \___/ \___/
                                 //                                    i  +  l   + t
-                                let motive_v = i + constructor.params.len() + t;
+                                let motive_v = i + constructor.params.len() + t + depth;
 
                                 // Apply the applied constructor parameter to the motive.
                                 return TermKind::Application {
@@ -239,7 +247,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                             //                                V \___/ \___/ \___/
                             //                                1 + i  +  l  +  t
                             let Some(v) = v.checked_sub(params.len()) else {
-                                let v = v + 1 + i + constructor.params.len() + t;
+                                let v = v + 1 + i + constructor.params.len() + t + depth;
                                 return TermKind::Variable(Variable(v));
                             };
                             // Otherwise, `v` is referencing something in the global scope.
@@ -254,7 +262,8 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                                 + 1
                                 + i
                                 + constructor.params.len()
-                                + t;
+                                + t
+                                + depth;
                             TermKind::Variable(Variable(v))
                         });
 
@@ -272,7 +281,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                         // Adjust the parameter type for the new context.
                         // Old context: Globals                  P₁…Pₘ  Type   A₁…Aⱼ
                         // New context: Globals TypeFormer C₁…Cₙ P₁…Pₘ C p₁…pᵢ A₁…Aⱼ
-                        param_type.with_free(|v| {
+                        param_type.kind.substitute_free(|v| {
                             // If `v` is referencing a previous constructor parameter, it can stay
                             // the same.
                             let Some(v) = v.checked_sub(j) else {
@@ -357,7 +366,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     // New context: Globals TypeFormer C₁…Cₙ P₁…Pᵢ
                     //                      \________/ \___/ \___/
                     //                          1     +  n  ,  i
-                    param_type.with_free(|v| {
+                    param_type.kind.substitute_free(|v| {
                         let v = if v < i { v } else { v + 1 + constructors.len() };
                         TermKind::Variable(Variable(v))
                     });
@@ -395,7 +404,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     // the parameters and the number of constructors generated so far).
                     //
                     // We construct it in the local context excluding the constructor parameters,
-                    // as it will be offset appropriately by the below `with_free` call:
+                    // as it will be offset appropriately by the below `substitute_free` call:
                     //
                     // Globals TypeFormer C₁…Cᵢ P₁…Pₙ
                     //                    \___/ \___/
@@ -409,7 +418,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     // Replace the `constructor`’s type variables with the fully formed type.
                     // Old context: Globals                  P₁…Pₙ Type
                     // New context: Globals TypeFormer C₁…Cᵢ P₁…Pₙ
-                    term.with_free(|v| {
+                    term.kind.substitute_free(|v| {
                         // When v = 0, substitute in the fully formed type.
                         let Some(v) = v.checked_sub(1) else {
                             return formed_type.kind.clone();
@@ -432,7 +441,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                         // New context: Globals TypeFormer C₁…Cᵢ P₁…Pⱼ
                         //                      \________/ \___/ \___/
                         //                          1     +  i  ,  j
-                        param_type.with_free(|v| {
+                        param_type.kind.substitute_free(|v| {
                             TermKind::Variable(Variable(if v < j { v } else { v + i + 1 }))
                         });
                         term = pi_term(constructor.span, param_name, param_type, term);
@@ -482,6 +491,11 @@ impl Context {
         self.variables.drain(self.variables.len() - n..)
     }
     pub fn get(&self, variable: Variable) -> &BoundVariable {
+        assert!(
+            variable.0 < self.variables.len(),
+            "variable {} out of bounds",
+            variable.0
+        );
         &self.variables[self.variables.len() - 1 - variable.0]
     }
 }
@@ -653,16 +667,15 @@ fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (T
         }
         TermKind::Variable(v) => {
             let mut variable = context.get(v).clone();
-            // TODO: Check over this
-            variable.r#type.increase_free(v.0 + 1);
+            variable.r#type.kind.increase_free(v.0 + 1);
             r#type = Term {
                 kind: variable.r#type.kind,
                 span: variable.r#type.span,
             };
             // TODO: Is this enough to δ-reduce?
             if let Some(mut value) = variable.value {
-                value.increase_free(v.0 + 1);
-                term = value;
+                value.kind.increase_free(v.0 + 1);
+                term.kind = value.kind;
             }
         }
         TermKind::Abstraction {
@@ -777,7 +790,7 @@ fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (T
             }
 
             // Replace the lowest free variable in the return type with the new type.
-            ret_type.replace(&right);
+            ret_type.kind.replace(&right);
             (_, r#type) = type_of(context, *ret_type, reporter);
 
             // TODO: recursive replacing; is this right?
@@ -790,7 +803,7 @@ fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (T
             {
                 assert!(*r#type == *param_type);
                 // Replace the lowest free variable in the lambda body with the new value.
-                body.replace(&right);
+                body.kind.replace(&right);
                 (_, term) = type_of(context, *body, reporter);
             } else {
                 let left = Box::new(left);

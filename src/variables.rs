@@ -23,79 +23,6 @@ pub struct Term {
     pub kind: TermKind,
 }
 
-impl Term {
-    /// Call a function on every free variable of this term.
-    pub fn with_free(&mut self, mut f: impl FnMut(usize) -> TermKind) {
-        let mut to_process = vec![(self, Variable(0))];
-        while let Some((term, lowest_free)) = to_process.pop() {
-            // This is split into its own `match` to work around Polonius
-            match &term.kind {
-                // Only modify free variables
-                TermKind::Variable(v) if *v >= lowest_free => {
-                    term.kind = f(v.0 - lowest_free.0);
-                    term.increase_free(lowest_free.0);
-                    continue;
-                }
-                _ => {}
-            }
-
-            match &mut term.kind {
-                // Do not modify bound variables
-                TermKind::Variable(_) => {}
-                TermKind::Abstraction { r#type, body, .. } => {
-                    to_process.push((r#type, lowest_free));
-                    to_process.push((body, Variable(lowest_free.0 + 1)));
-                }
-                TermKind::Application { left, right } => {
-                    to_process.push((left, lowest_free));
-                    to_process.push((right, lowest_free));
-                }
-                // Sorts and errors do not contain variables
-                TermKind::Sort { .. } | TermKind::Error => {}
-            }
-        }
-    }
-
-    /// Increase the values of all free variables in the given expression.
-    pub fn increase_free(&mut self, by: usize) {
-        self.increase_free_from(by, Variable(0));
-    }
-
-    /// Increase the values of all free variables in the given expression.
-    pub fn increase_free_from(&mut self, by: usize, lowest_free: Variable) {
-        let mut to_process = vec![(self, lowest_free)];
-        while let Some((term, lowest_free)) = to_process.pop() {
-            match &mut term.kind {
-                // Do not modify bound variables
-                TermKind::Variable(v) if *v < lowest_free => {}
-                // Add to free variables
-                TermKind::Variable(v) => v.0 += by,
-                TermKind::Abstraction { r#type, body, .. } => {
-                    to_process.push((r#type, lowest_free));
-                    to_process.push((body, Variable(lowest_free.0 + 1)));
-                }
-                TermKind::Application { left, right } => {
-                    to_process.push((left, lowest_free));
-                    to_process.push((right, lowest_free));
-                }
-                // Sorts and errors do not contain variables
-                TermKind::Sort { .. } | TermKind::Error => {}
-            }
-        }
-    }
-
-    /// Replace the lowest free variable in the given term with the replacement.
-    pub fn replace(&mut self, with: &Term) {
-        self.with_free(|v| {
-            if v == 0 {
-                with.kind.clone()
-            } else {
-                TermKind::Variable(Variable(v - 1))
-            }
-        })
-    }
-}
-
 impl PartialEq for Term {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind
@@ -206,6 +133,65 @@ pub enum TermKind {
         right: Box<Term>,
     },
     Error,
+}
+
+impl TermKind {
+    /// Replace the lowest free variable in the given term with the replacement.
+    pub fn replace(&mut self, with: &Term) {
+        self.substitute_free(|v| {
+            if v == 0 {
+                with.kind.clone()
+            } else {
+                TermKind::Variable(Variable(v - 1))
+            }
+        })
+    }
+
+    /// Increase the values of free variables above a given threshold in the given expression.
+    pub fn increase_free(&mut self, by: usize) {
+        self.substitute_free_with_depth(|v, depth| TermKind::Variable(Variable(v + by + depth)))
+    }
+
+    /// Substitute every free variable of this term.
+    pub fn substitute_free(&mut self, mut f: impl FnMut(usize) -> TermKind) {
+        self.substitute_free_with_depth(|v, depth| {
+            let mut term = f(v);
+            term.increase_free(depth);
+            term
+        });
+    }
+
+    /// Substitute every free variable of this term. The second parameter to the closure is the
+    /// depth at which the substitution is occuring.
+    pub fn substitute_free_with_depth(&mut self, mut f: impl FnMut(usize, usize) -> TermKind) {
+        let mut to_process = vec![(self, Variable(0))];
+        while let Some((term, lowest_free)) = to_process.pop() {
+            // This is split into its own `match` to work around Polonius
+            match term {
+                // Only modify free variables
+                TermKind::Variable(v) if *v >= lowest_free => {
+                    *term = f(v.0 - lowest_free.0, lowest_free.0);
+                    continue;
+                }
+                _ => {}
+            }
+
+            match term {
+                // Do not modify bound variables
+                TermKind::Variable(_) => {}
+                TermKind::Abstraction { r#type, body, .. } => {
+                    to_process.push((&mut r#type.kind, lowest_free));
+                    to_process.push((&mut body.kind, Variable(lowest_free.0 + 1)));
+                }
+                TermKind::Application { left, right } => {
+                    to_process.push((&mut left.kind, lowest_free));
+                    to_process.push((&mut right.kind, lowest_free));
+                }
+                // Sorts and errors do not contain variables
+                TermKind::Sort { .. } | TermKind::Error => {}
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
