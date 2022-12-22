@@ -130,24 +130,43 @@ impl Display for TermDisplay<'_, '_> {
                 r#type,
                 body,
             } => {
-                write!(f, "({token} ")?;
+                write!(f, "{token} ")?;
                 if !variable.is_none() {
                     let source = &self.source[variable.start..variable.end];
                     write!(f, "{source} : ")?;
                 }
                 write!(
                     f,
-                    "{}, {})",
+                    "{}, {}",
                     r#type.display(self.source),
                     body.display(self.source)
                 )
             }
-            TermKind::Application { left, right } => write!(
-                f,
-                "({} {})",
-                left.display(self.source),
-                right.display(self.source)
-            ),
+            TermKind::Application { left, right } => {
+                let mut left = left;
+                let mut chain = vec![right];
+                while let TermKind::Application {
+                    left: new_left,
+                    right,
+                } = &left.kind
+                {
+                    chain.push(right);
+                    left = new_left;
+                }
+                if let TermKind::Variable(_) | TermKind::Error = &left.kind {
+                    write!(f, "{}", left.display(self.source))?;
+                } else {
+                    write!(f, "({})", left.display(self.source))?;
+                };
+                for item in chain.into_iter().rev() {
+                    if let TermKind::Variable(_) | TermKind::Error = &item.kind {
+                        write!(f, " {}", item.display(self.source))?;
+                    } else {
+                        write!(f, " ({})", item.display(self.source))?;
+                    }
+                }
+                Ok(())
+            }
             TermKind::Error => f.write_str("[error]"),
         }
     }
@@ -396,3 +415,4 @@ use core::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::Write;
