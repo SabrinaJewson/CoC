@@ -61,7 +61,7 @@ pub enum AbstractionToken {
     Lambda,
 }
 
-impl Debug for AbstractionToken {
+impl Display for AbstractionToken {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Pi => "Π",
@@ -519,7 +519,6 @@ use crate::lexer::TokenKind;
 use crate::reporter::Reporter;
 use crate::reporter::Span;
 use std::fmt;
-use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::iter::Peekable;

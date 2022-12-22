@@ -39,11 +39,7 @@ impl Term {
             match &mut term.kind {
                 // Do not modify bound variables
                 TermKind::Variable(_) => {}
-                TermKind::Abstraction {
-                    token: _,
-                    r#type,
-                    body,
-                } => {
+                TermKind::Abstraction { r#type, body, .. } => {
                     to_process.push((r#type, lowest_free));
                     to_process.push((body, Variable(lowest_free.0 + 1)));
                 }
@@ -71,11 +67,7 @@ impl Term {
                 TermKind::Variable(v) if *v < lowest_free => {}
                 // Add to free variables
                 TermKind::Variable(v) => v.0 += by,
-                TermKind::Abstraction {
-                    token: _,
-                    r#type,
-                    body,
-                } => {
+                TermKind::Abstraction { r#type, body, .. } => {
                     to_process.push((r#type, lowest_free));
                     to_process.push((body, Variable(lowest_free.0 + 1)));
                 }
@@ -107,9 +99,57 @@ impl PartialEq for Term {
     }
 }
 
-impl Debug for Term {
+impl Term {
+    pub fn display<'this, 'source>(
+        &'this self,
+        source: &'source str,
+    ) -> TermDisplay<'this, 'source> {
+        TermDisplay { term: self, source }
+    }
+}
+
+pub struct TermDisplay<'term, 'source> {
+    term: &'term Term,
+    source: &'source str,
+}
+
+impl Display for TermDisplay<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.kind, f)
+        match &self.term.kind {
+            TermKind::Sort { level } => write!(f, "Sort {level:?}"),
+            TermKind::Variable(v) => {
+                if self.term.span.is_none() {
+                    Display::fmt(&v.0, f)
+                } else {
+                    Display::fmt(&self.source[self.term.span.start..self.term.span.end], f)
+                }
+            }
+            TermKind::Abstraction {
+                token,
+                variable,
+                r#type,
+                body,
+            } => {
+                write!(f, "({token} ")?;
+                if !variable.is_none() {
+                    let source = &self.source[variable.start..variable.end];
+                    write!(f, "{source} : ")?;
+                }
+                write!(
+                    f,
+                    "{}, {})",
+                    r#type.display(self.source),
+                    body.display(self.source)
+                )
+            }
+            TermKind::Application { left, right } => write!(
+                f,
+                "({} {})",
+                left.display(self.source),
+                right.display(self.source)
+            ),
+            TermKind::Error => f.write_str("[error]"),
+        }
     }
 }
 
@@ -121,6 +161,7 @@ pub enum TermKind {
     Variable(Variable),
     Abstraction {
         token: AbstractionToken,
+        variable: Span,
         r#type: Box<Term>,
         body: Box<Term>,
     },
@@ -129,22 +170,6 @@ pub enum TermKind {
         right: Box<Term>,
     },
     Error,
-}
-
-impl Debug for TermKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sort { level } => write!(f, "Sort {level:?}"),
-            Self::Variable(v) => write!(f, "{}", v.0),
-            Self::Abstraction {
-                token,
-                r#type,
-                body,
-            } => write!(f, "({token:?} {type:?}, {body:?})"),
-            Self::Application { left, right } => write!(f, "({left:?} {right:?})"),
-            Self::Error => f.write_str("[error]"),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -317,6 +342,7 @@ fn resolve_term(
 
             TermKind::Abstraction {
                 token: *token,
+                variable: variable.span,
                 r#type,
                 body,
             }
@@ -368,4 +394,5 @@ use crate::reporter::Reporter;
 use crate::reporter::Span;
 use core::fmt;
 use std::fmt::Debug;
+use std::fmt::Display;
 use std::fmt::Formatter;

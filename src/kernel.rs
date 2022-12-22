@@ -16,9 +16,10 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     if got_type != r#type {
                         reporter.error(
                             body.span,
-                            format_args!(
-                                "type mismatch of definition:\n expected: {:?}\n      got: {:?}",
-                                r#type, got_type,
+                            format!(
+                                "type mismatch of definition:\n expected: {}\n      got: {}",
+                                r#type.display(reporter.source()),
+                                got_type.display(reporter.source()),
                             ),
                         );
                     }
@@ -481,6 +482,7 @@ fn check_constructor(
             TermKind::Variable(v) if v == type_constructed => break,
             TermKind::Abstraction {
                 token: AbstractionToken::Pi,
+                variable: _,
                 r#type,
                 body,
             } => {
@@ -532,6 +534,7 @@ fn check_strictly_positive(
             TermKind::Sort { .. } | TermKind::Variable(_) => break false,
             TermKind::Abstraction {
                 token: AbstractionToken::Pi,
+                variable: _,
                 r#type,
                 body,
             } => {
@@ -559,11 +562,7 @@ fn check_not_contained(term: &Term, variable: Variable, reporter: &mut Reporter)
                     "non-positive occurence of datatype being declared",
                 );
             }
-            TermKind::Abstraction {
-                token: _,
-                r#type,
-                body,
-            } => {
+            TermKind::Abstraction { r#type, body, .. } => {
                 to_check.push((r#type, variable));
                 to_check.push((body, Variable(variable.0 + 1)));
             }
@@ -622,6 +621,7 @@ fn type_of(
         }
         TermKind::Abstraction {
             token,
+            variable,
             r#type: param_type,
             body,
         } => {
@@ -632,7 +632,7 @@ fn type_of(
                 kind => {
                     reporter.error(
                         param_type.span,
-                        format_args!("{token:?} parameter is not a type"),
+                        format_args!("{token} parameter is not a type"),
                     );
 
                     // Guess that the user meant to write the _type_ of the term they wrote
@@ -692,6 +692,7 @@ fn type_of(
                     r#type = Term {
                         kind: TermKind::Abstraction {
                             token: AbstractionToken::Pi,
+                            variable,
                             r#type: param_type.clone(),
                             // TODO: Are the de bruijn indices correct here?
                             body: Box::new(body_type),
@@ -703,6 +704,7 @@ fn type_of(
 
             term.kind = TermKind::Abstraction {
                 token,
+                variable,
                 r#type: param_type,
                 body: Box::new(body),
             };
@@ -712,18 +714,23 @@ fn type_of(
             let (left_type, left) = type_of(variables, *left, reporter);
             let (right_type, right) = type_of(variables, *right, reporter);
 
-            let TermKind::Abstraction { token: AbstractionToken::Pi, r#type: param_type, body: mut ret_type } = left_type.kind else {
+            let TermKind::Abstraction { token: AbstractionToken::Pi, variable: _, r#type: param_type, body: mut ret_type } = left_type.kind else {
                 reporter.error(left.span, "left hand side of application is not a function");
                 // Recover by ignoring the application
                 return (left_type, left);
             };
 
             if *param_type != right_type {
-                reporter.error(right.span, format_args!(
-                    "function application type mismatch on {:?} of {:?}\n expected: {:?}\n      got: {:?}",
-                    left, right,
-                    param_type, right_type
-                ));
+                reporter.error(
+                    right.span,
+                    format!(
+                        "function application type mismatch on {} of {}\n expected: {}\n      got: {}",
+                        left.display(reporter.source()),
+                        right.display(reporter.source()),
+                        param_type.display(reporter.source()),
+                        right_type.display(reporter.source()),
+                    ),
+                );
             }
 
             // Replace the lowest free variable in the return type with the new type.
@@ -733,11 +740,12 @@ fn type_of(
             // TODO: recursive replacing; is this right?
             if let TermKind::Abstraction {
                 token: AbstractionToken::Lambda,
+                variable: _,
                 r#type,
                 mut body,
             } = left.kind
             {
-                assert_eq!(*r#type, *param_type);
+                assert!(*r#type == *param_type);
                 // Replace the lowest free variable in the lambda body with the new value.
                 body.replace(&right);
                 (_, term) = type_of(variables, *body, reporter);
@@ -867,6 +875,7 @@ fn pi_term(span: Span, r#type: Term, body: Term) -> Term {
             token: AbstractionToken::Pi,
             r#type: Box::new(r#type),
             body: Box::new(body),
+            variable: Span::none(),
         },
     }
 }
