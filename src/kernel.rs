@@ -523,7 +523,6 @@ struct Constructor {
 /// Checks, typechecks and reduces a constructor.
 // Copy Lean: don’t reduce the outer term, but reduce inner terms
 // TODO: Disallow depending on recursive args
-// TODO: Move to &mut-based API
 fn check_constructor(
     context: &mut Context,
     name: Ident,
@@ -672,7 +671,6 @@ fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (T
                 kind: variable.r#type.kind,
                 span: variable.r#type.span,
             };
-            // TODO: Is this enough to δ-reduce?
             if let Some(mut value) = variable.value {
                 value.kind.increase_free(v.0 + 1);
                 term.kind = value.kind;
@@ -750,7 +748,6 @@ fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (T
                             token: AbstractionToken::Pi,
                             variable: param.name.clone(),
                             r#type: Box::new(param.r#type.clone()),
-                            // TODO: Are the de bruijn indices correct here?
                             body: Box::new(body_type),
                         },
                         span: Span::none(),
@@ -793,7 +790,6 @@ fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (T
             ret_type.kind.replace(&right);
             (_, r#type) = type_of(context, *ret_type, reporter);
 
-            // TODO: recursive replacing; is this right?
             if let TermKind::Abstraction {
                 token: AbstractionToken::Lambda,
                 variable: _,
