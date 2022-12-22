@@ -206,7 +206,7 @@ pub struct Variable(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniverseVariable {}
 
-pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut impl Reporter) -> Vec<Item> {
+pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut Reporter) -> Vec<Item> {
     let mut variables = Vec::new();
     let mut items = Vec::new();
 
@@ -288,7 +288,7 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut impl Reporter) ->
 fn resolve_term(
     variables: &mut Vec<Box<lexer::Ident>>,
     term: &parser::Term,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<Term> {
     let kind = match &term.kind {
         parser::TermKind::Sort { level } => TermKind::Sort {
@@ -334,7 +334,7 @@ fn resolve_term(
 
 fn resolve_universe_level(
     level: &parser::UniverseLevel,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<UniverseLevel> {
     let kind = match &level.kind {
         parser::UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(*n),

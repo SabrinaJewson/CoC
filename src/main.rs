@@ -4,7 +4,7 @@ fn main() -> anyhow::Result<()> {
     let source = fs::read_to_string(&args.input)
         .with_context(|| format!("failed to read `{}`", args.input))?;
 
-    let mut reporter = CliReporter::new(&args.input, &source);
+    let mut reporter = Reporter::new(&args.input, &source);
 
     let tokens = lexer::lex(&source, &mut reporter);
     let source = parser::parse(tokens, &mut reporter);
@@ -12,51 +12,6 @@ fn main() -> anyhow::Result<()> {
     kernel::typecheck(definitions, &mut reporter);
 
     Ok(())
-}
-
-use cli_reporter::CliReporter;
-mod cli_reporter {
-    pub struct CliReporter<'source> {
-        cache: (&'source str, Source),
-        source: &'source str,
-    }
-    impl<'source> CliReporter<'source> {
-        pub fn new(path: &'source str, source: &'source str) -> Self {
-            Self {
-                cache: (path, ariadne::Source::from(&source)),
-                source,
-            }
-        }
-
-        fn to_char(&self, i: usize) -> usize {
-            self.source
-                .char_indices()
-                .position(|(j, _)| j == i)
-                .expect("span out of range")
-        }
-    }
-    impl Reporter for CliReporter<'_> {
-        fn error(&mut self, span: Span, error: impl Display) {
-            let range = if !span.is_none() {
-                self.to_char(span.start)..self.to_char(span.end)
-            } else {
-                0..self.source.len()
-            };
-
-            let _ = Report::build(ariadne::ReportKind::Error, self.cache.0, range.start)
-                .with_message(&error)
-                .with_label(Label::new((self.cache.0, range)).with_message(&error))
-                .finish()
-                .eprint(&mut self.cache);
-        }
-    }
-
-    use crate::reporter::Reporter;
-    use crate::reporter::Span;
-    use ariadne::Label;
-    use ariadne::Report;
-    use ariadne::Source;
-    use std::fmt::Display;
 }
 
 #[derive(clap::Parser)]
@@ -72,4 +27,5 @@ mod variables;
 
 use anyhow::Context as _;
 use clap::Parser as _;
+use reporter::Reporter;
 use std::fs;

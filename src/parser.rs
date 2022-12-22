@@ -114,7 +114,7 @@ pub struct Ident {
     pub span: Span,
 }
 
-pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Reporter) -> Source {
+pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut Reporter) -> Source {
     let mut tokens = tokens.into_iter().peekable();
 
     let mut items = Vec::new();
@@ -129,7 +129,7 @@ pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut impl Report
 
 fn parse_item(
     tokens: &mut Peekable<impl Iterator<Item = Token>>,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<Item> {
     let keyword_token = tokens.next().unwrap();
 
@@ -234,7 +234,7 @@ mod kw {
 fn parse_param_group(
     tokens: &mut Peekable<impl Iterator<Item = Token>>,
     fallback_span: Span,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<ParamGroup> {
     let first_ident = parse_ident(tokens, fallback_span, reporter)?;
 
@@ -255,7 +255,7 @@ fn parse_param_group(
 fn parse_term(
     tokens: &mut Peekable<impl Iterator<Item = Token>>,
     fallback_span: Span,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<Term> {
     let mut accumulator: Option<Term> = None;
 
@@ -359,7 +359,7 @@ fn parse_term(
 fn parse_universe_level<I: Iterator<Item = Token>>(
     tokens: &mut Peekable<I>,
     fallback_span: Span,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> UniverseLevel {
     let Some(token) = tokens.next() else {
         reporter.error(fallback_span, "expected universe level");
@@ -444,10 +444,10 @@ fn parse_universe_level<I: Iterator<Item = Token>>(
     accumulator
 }
 
-fn with_delimited<R: Reporter, O>(
+fn with_delimited<O>(
     tokens: Vec<Token>,
-    reporter: &mut R,
-    f: impl FnOnce(&mut Peekable<vec::IntoIter<Token>>, &mut R) -> Option<O>,
+    reporter: &mut Reporter,
+    f: impl FnOnce(&mut Peekable<vec::IntoIter<Token>>, &mut Reporter) -> Option<O>,
 ) -> Option<O> {
     let mut tokens = tokens.into_iter().peekable();
     let out = f(&mut tokens, reporter)?;
@@ -460,7 +460,7 @@ fn with_delimited<R: Reporter, O>(
 fn parse_universe_level_lit(
     nat: &str,
     span: Span,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<UniverseLevelLit> {
     let Ok(value) = nat.parse::<u32>() else {
         reporter.error(span, "universe level too high");
@@ -473,7 +473,7 @@ fn parse_exact(
     tokens: &mut Peekable<impl Iterator<Item = Token>>,
     exact: TokenKind,
     fallback_span: Span,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<Span> {
     match tokens.next() {
         Some(token) if token.kind == exact => Some(token.span),
@@ -497,7 +497,7 @@ fn parse_exact(
 fn parse_ident(
     tokens: &mut Peekable<impl Iterator<Item = Token>>,
     fallback_span: Span,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Option<Ident> {
     let Some(token) = tokens.next() else {
         reporter.error(fallback_span, "unexpected EOF, expected identifier");

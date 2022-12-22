@@ -58,7 +58,7 @@ impl Display for TokenKind {
     }
 }
 
-pub fn lex(input: &str, reporter: &mut impl Reporter) -> Vec<Token> {
+pub fn lex(input: &str, reporter: &mut Reporter) -> Vec<Token> {
     let (tokens, rest) = lex_inner(input, 0, 0, reporter);
     assert_eq!(rest, "");
     tokens
@@ -68,7 +68,7 @@ fn lex_inner<'input>(
     original_input: &'input str,
     depth: usize,
     offset: usize,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> (Vec<Token>, &'input str) {
     let mut tokens = Vec::new();
     let mut input = original_input.chars();

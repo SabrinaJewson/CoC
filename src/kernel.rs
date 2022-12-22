@@ -1,4 +1,4 @@
-pub fn typecheck(items: Vec<Item>, reporter: &mut impl Reporter) {
+pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
     let mut variables = Vec::new();
 
     for item in items {
@@ -464,7 +464,7 @@ struct Constructor {
 fn check_constructor(
     variables: &mut Vec<(Term, Option<Term>)>,
     mut term: Term,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> Constructor {
     let span = term.span;
     let mut params = 0;
@@ -522,7 +522,7 @@ fn check_constructor(
 fn check_strictly_positive(
     mut term: &Term,
     variable: Variable,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> (bool, usize) {
     let mut params = 0;
     let recursive = loop {
@@ -549,7 +549,7 @@ fn check_strictly_positive(
     (recursive, params)
 }
 
-fn check_not_contained(term: &Term, variable: Variable, reporter: &mut impl Reporter) {
+fn check_not_contained(term: &Term, variable: Variable, reporter: &mut Reporter) {
     let mut to_check = vec![(term, variable)];
     while let Some((term, variable)) = to_check.pop() {
         match &term.kind {
@@ -579,7 +579,7 @@ fn check_not_contained(term: &Term, variable: Variable, reporter: &mut impl Repo
 fn type_of(
     variables: &mut Vec<(Term, Option<Term>)>,
     mut term: Term,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> (Term, Term) {
     let r#type: Term;
 
@@ -758,7 +758,7 @@ fn type_of(
     (r#type, term)
 }
 
-fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) -> UniverseLevel {
+fn reduce_universe_level(level: &UniverseLevel, reporter: &mut Reporter) -> UniverseLevel {
     let kind = match &level.kind {
         UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(*n),
         UniverseLevelKind::Variable(v) => match *v {},
@@ -819,7 +819,7 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut impl Reporter) ->
 fn add_universe_level_lit(
     left: UniverseLevelLit,
     right: UniverseLevelLit,
-    reporter: &mut impl Reporter,
+    reporter: &mut Reporter,
 ) -> UniverseLevelLit {
     let span = left.span.join(right.span);
     let value = left.value.checked_add(right.value).unwrap_or_else(|| {
