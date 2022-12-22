@@ -27,7 +27,7 @@ pub enum TokenKind {
     Plus,
     Bar,
     Natural(String),
-    Ident(Box<Ident>),
+    Ident(Rc<Ident>),
     Delimited(Vec<Token>),
 }
 
@@ -120,7 +120,7 @@ fn lex_inner<'input>(
                 let mut ident = String::with_capacity(c.len_utf8() + ident_continue.len());
                 ident.push(c);
                 ident.push_str(ident_continue);
-                TokenKind::Ident(Ident::new_box(ident.into_boxed_str()).unwrap())
+                TokenKind::Ident(Ident::new(&ident).unwrap())
             }
             '0'..='9' => {
                 let rest = input.as_str();
@@ -176,16 +176,12 @@ impl Ident {
         chars.next().map_or(false, is_xid_start) && chars.all(is_xid_continue)
     }
 
-    pub unsafe fn new_box_unchecked(s: Box<str>) -> Box<Self> {
+    pub unsafe fn new_rc_unchecked(s: Rc<str>) -> Rc<Self> {
         unsafe { mem::transmute(s) }
     }
 
-    pub fn new_box(s: Box<str>) -> Option<Box<Self>> {
-        Self::is_valid(&s).then(|| unsafe { Self::new_box_unchecked(s) })
-    }
-
-    pub fn new_string(s: String) -> Option<Box<Self>> {
-        Self::new_box(s.into_boxed_str())
+    pub fn new(s: &str) -> Option<Rc<Self>> {
+        Self::is_valid(s).then(|| unsafe { Self::new_rc_unchecked(s.into()) })
     }
 
     pub fn as_str(&self) -> &str {
@@ -199,13 +195,6 @@ impl Display for Ident {
     }
 }
 
-impl ToOwned for Ident {
-    type Owned = Box<Self>;
-    fn to_owned(&self) -> Self::Owned {
-        unsafe { Self::new_box_unchecked(self.inner.into()) }
-    }
-}
-
 fn string_offset(s: &str, base: &str) -> usize {
     (s as *const str as *const () as usize) - (base as *const str as *const () as usize)
 }
@@ -216,5 +205,6 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::mem;
+use std::rc::Rc;
 use unicode_ident::is_xid_continue;
 use unicode_ident::is_xid_start;

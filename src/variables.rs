@@ -4,14 +4,17 @@ pub enum Item {
 }
 
 pub struct Definition {
+    pub name: Ident,
     pub r#type: Term,
     pub body: Option<Term>,
 }
 
 pub struct Inductive {
-    pub params: Vec<Term>,
+    pub name: Ident,
+    pub params: Vec<(Ident, Term)>,
     pub sort: Term,
-    pub constructors: Vec<Term>,
+    pub constructors: Vec<(Ident, Term)>,
+    pub recursor_name: Ident,
 }
 
 #[derive(Clone)]
@@ -100,76 +103,90 @@ impl PartialEq for Term {
 }
 
 impl Term {
-    pub fn display<'this, 'source>(
+    pub fn display<'this, 'context>(
         &'this self,
-        source: &'source str,
-    ) -> TermDisplay<'this, 'source> {
-        TermDisplay { term: self, source }
+        context: &'context Context,
+    ) -> TermDisplay<'this, 'context> {
+        TermDisplay {
+            term: self,
+            context,
+        }
     }
 }
 
-pub struct TermDisplay<'term, 'source> {
+pub struct TermDisplay<'term, 'context> {
     term: &'term Term,
-    source: &'source str,
+    context: &'context Context,
 }
 
 impl Display for TermDisplay<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match &self.term.kind {
-            TermKind::Sort { level } => write!(f, "Sort {level:?}"),
-            TermKind::Variable(v) => {
-                if self.term.span.is_none() {
-                    Display::fmt(&v.0, f)
-                } else {
-                    Display::fmt(&self.source[self.term.span.start..self.term.span.end], f)
-                }
-            }
-            TermKind::Abstraction {
-                token,
-                variable,
-                r#type,
-                body,
-            } => {
-                write!(f, "{token} ")?;
-                if !variable.is_none() {
-                    let source = &self.source[variable.start..variable.end];
-                    write!(f, "{source} : ")?;
-                }
-                write!(
-                    f,
-                    "{}, {}",
-                    r#type.display(self.source),
-                    body.display(self.source)
-                )
-            }
-            TermKind::Application { left, right } => {
-                let mut left = left;
-                let mut chain = vec![right];
-                while let TermKind::Application {
-                    left: new_left,
-                    right,
-                } = &left.kind
-                {
-                    chain.push(right);
-                    left = new_left;
-                }
-                if let TermKind::Variable(_) | TermKind::Error = &left.kind {
-                    write!(f, "{}", left.display(self.source))?;
-                } else {
-                    write!(f, "({})", left.display(self.source))?;
-                };
-                for item in chain.into_iter().rev() {
-                    if let TermKind::Variable(_) | TermKind::Error = &item.kind {
-                        write!(f, " {}", item.display(self.source))?;
-                    } else {
-                        write!(f, " ({})", item.display(self.source))?;
-                    }
-                }
-                Ok(())
-            }
-            TermKind::Error => f.write_str("[error]"),
-        }
+        display_term(self.context, &mut Vec::new(), false, self.term, f)
     }
+}
+
+fn display_term<'term>(
+    context: &Context,
+    variables: &mut Vec<&'term Ident>,
+    brackets: bool,
+    term: &'term Term,
+    f: &mut Formatter<'_>,
+) -> fmt::Result {
+    let needs_brackets = brackets && !matches!(term.kind, TermKind::Variable(_) | TermKind::Error);
+
+    if needs_brackets {
+        f.write_str("(")?;
+    }
+
+    match &term.kind {
+        TermKind::Sort { level } => write!(f, "Sort {level:?}")?,
+        // TODO: We don’t currently implement α-conversion to remove collisions, meaning error
+        // messages can sometimes not make sense in rare cases
+        TermKind::Variable(v) => {
+            if let Some(v) = v.0.checked_sub(variables.len()) {
+                Display::fmt(&context.get(Variable(v)).name, f)?;
+            } else {
+                Display::fmt(&variables[variables.len() - 1 - v.0], f)?;
+            }
+        }
+        TermKind::Abstraction {
+            token,
+            variable,
+            r#type,
+            body,
+        } => {
+            write!(f, "{token} {variable} : ")?;
+            display_term(context, variables, false, r#type, f)?;
+            f.write_str(", ")?;
+            variables.push(variable);
+            display_term(context, variables, false, body, f)?;
+            variables.pop().unwrap();
+        }
+        TermKind::Application { left, right } => {
+            let mut left = left;
+            let mut chain = vec![right];
+            while let TermKind::Application {
+                left: new_left,
+                right,
+            } = &left.kind
+            {
+                chain.push(right);
+                left = new_left;
+            }
+            display_term(context, variables, true, left, f)?;
+            for item in chain.into_iter().rev() {
+                f.write_str(" ")?;
+                display_term(context, variables, true, item, f)?;
+            }
+        }
+        TermKind::Error => f.write_str("[error]")?,
+    }
+
+    if needs_brackets {
+        f.write_str(")")?;
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, PartialEq)]
@@ -180,7 +197,7 @@ pub enum TermKind {
     Variable(Variable),
     Abstraction {
         token: AbstractionToken,
-        variable: Span,
+        variable: Ident,
         r#type: Box<Term>,
         body: Box<Term>,
     },
@@ -269,9 +286,13 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut Reporter) -> Vec<
                     None => None,
                 };
 
-                variables.push(def.ident.name);
+                variables.push(def.ident.clone());
 
-                Item::Definition(Definition { r#type, body })
+                Item::Definition(Definition {
+                    name: def.ident,
+                    r#type,
+                    body,
+                })
             }
             parser::Item::Inductive(inductive) => {
                 let mut params = Vec::new();
@@ -280,8 +301,8 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut Reporter) -> Vec<
                         let Some(r#type) =
                             resolve_term(&mut variables, &param_group.r#type, reporter)
                             else { break };
-                        params.push(r#type);
-                        variables.push(ident.name);
+                        params.push((ident.clone(), r#type));
+                        variables.push(ident);
                     }
                 }
 
@@ -290,7 +311,7 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut Reporter) -> Vec<
 
                 // Bring the type name in scope for the constructors
                 let ident_index = variables.len();
-                variables.push(inductive.ident.name);
+                variables.push(inductive.ident);
 
                 let mut constructors = Vec::new();
                 let mut constructor_idents = Vec::new();
@@ -298,29 +319,36 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut Reporter) -> Vec<
                     let Some(r#type) = resolve_term(&mut variables, &constructor.r#type, reporter)
                         else { continue };
 
-                    constructors.push(r#type);
-
                     let ident = &variables[ident_index];
-                    constructor_idents.push(
-                        lexer::Ident::new_string(format!("{ident}_{}", constructor.ident.name))
+                    let ident = Ident {
+                        span: constructor.ident.span,
+                        name: lexer::Ident::new(&format!("{ident}_{}", constructor.ident.name))
                             .unwrap(),
-                    );
+                    };
+
+                    constructors.push((ident.clone(), r#type));
+                    constructor_idents.push(ident);
                 }
 
                 // Take the type name and parameters out of scope
-                let ident = variables.pop().unwrap();
+                let name = variables.pop().unwrap();
                 variables.truncate(variables.len() - params.len());
 
                 // Add the type name, constructors and recursor to the global scope
-                let recursor_name = lexer::Ident::new_string(format!("{ident}_rec")).unwrap();
-                variables.push(ident);
+                let recursor_name = Ident {
+                    name: lexer::Ident::new(&format!("{name}_rec")).unwrap(),
+                    span: name.span,
+                };
+                variables.push(name.clone());
                 variables.extend(constructor_idents);
-                variables.push(recursor_name);
+                variables.push(recursor_name.clone());
 
                 Item::Inductive(Inductive {
+                    name,
                     params,
                     sort,
                     constructors,
+                    recursor_name,
                 })
             }
         });
@@ -330,7 +358,7 @@ pub fn resolve(parser_items: Vec<parser::Item>, reporter: &mut Reporter) -> Vec<
 }
 
 fn resolve_term(
-    variables: &mut Vec<Box<lexer::Ident>>,
+    variables: &mut Vec<Ident>,
     term: &parser::Term,
     reporter: &mut Reporter,
 ) -> Option<Term> {
@@ -339,7 +367,7 @@ fn resolve_term(
             level: resolve_universe_level(level, reporter)?,
         },
         parser::TermKind::Variable(v) => {
-            let index = variables.iter().rev().position(|local| *local == *v);
+            let index = variables.iter().rev().position(|local| local.name == *v);
             let Some(index) = index else {
                 reporter.error(term.span, format_args!("unknown variable {}", v.as_str()));
                 return None;
@@ -355,13 +383,13 @@ fn resolve_term(
         } => {
             let r#type = Box::new(resolve_term(variables, r#type, reporter)?);
 
-            variables.push(variable.name.to_owned());
+            variables.push(variable.clone());
             let body = Box::new(resolve_term(variables, body, reporter)?);
             variables.pop();
 
             TermKind::Abstraction {
                 token: *token,
-                variable: variable.span,
+                variable: variable.clone(),
                 r#type,
                 body,
             }
@@ -405,9 +433,11 @@ fn resolve_universe_level(
     Some(UniverseLevel { kind, span })
 }
 
+use crate::kernel::Context;
 use crate::lexer;
 use crate::parser;
 use crate::parser::AbstractionToken;
+use crate::parser::Ident;
 use crate::parser::UniverseLevelLit;
 use crate::reporter::Reporter;
 use crate::reporter::Span;
@@ -415,4 +445,3 @@ use core::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::fmt::Write;

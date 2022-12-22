@@ -1,10 +1,10 @@
 pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
-    let mut variables = Vec::new();
+    let mut context = Context::default();
 
     for item in items {
         match item {
             Item::Definition(item) => {
-                let (type_type, r#type) = type_of(&mut variables, item.r#type, reporter);
+                let (type_type, r#type) = type_of(&mut context, item.r#type, reporter);
                 let TermKind::Sort { .. } = type_type.kind else {
                     reporter.error(r#type.span, "definition type is not a type");
                     // TODO: This offsets the other definitions :(
@@ -12,20 +12,21 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                 };
 
                 let body = item.body.map(|body| {
-                    let (got_type, body) = type_of(&mut variables, body, reporter);
+                    let (got_type, body) = type_of(&mut context, body, reporter);
                     if got_type != r#type {
                         reporter.error(
                             body.span,
                             format!(
                                 "type mismatch of definition:\n expected: {}\n      got: {}",
-                                r#type.display(reporter.source()),
-                                got_type.display(reporter.source()),
+                                r#type.display(&context),
+                                got_type.display(&context),
                             ),
                         );
                     }
                     body
                 });
-                variables.push((r#type, body));
+
+                context.push(item.name, r#type, body);
             }
             Item::Inductive(mut item) => {
                 // We follow Lean and don’t reduce anything here, even though we could.
@@ -37,37 +38,43 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
 
                 // Bring the params in scope
                 let params_len = item.params.len();
-                for param in item.params {
-                    let (mut param_type, mut param) = type_of(&mut variables, param, reporter);
-                    if !matches!(param_type.kind, TermKind::Sort { .. }) {
-                        reporter.error(param.span, "parameter is not a type");
+                for (param_name, param_type) in item.params {
+                    let (mut param_type_type, mut param_type) =
+                        type_of(&mut context, param_type, reporter);
+                    if !matches!(param_type_type.kind, TermKind::Sort { .. }) {
+                        reporter.error(param_type.span, "parameter is not a type");
 
                         // Guess that the user meant to write the _type_ of the term they wrote
                         // e.g. convert `inductive foo (x : 5)` to `inductive foo (x : nat)`
                         let assumed_type = Term {
-                            kind: param_type.kind,
-                            span: param.span,
+                            kind: param_type_type.kind,
+                            span: param_type.span,
                         };
-                        (param_type, param) = type_of(&mut variables, assumed_type, reporter);
-                        assert!(matches!(param_type.kind, TermKind::Sort { .. }));
+                        (param_type_type, param_type) =
+                            type_of(&mut context, assumed_type, reporter);
+                        assert!(matches!(param_type_type.kind, TermKind::Sort { .. }));
                     }
-                    variables.push((param, None));
+                    context.push(param_name, param_type, None);
                 }
                 // Bring the type itself in scope (with parameters applied)
-                variables.push((item.sort, None));
+                context.push(item.name, item.sort, None);
 
                 // Check each of the constructors
                 let constructors = item
                     .constructors
                     .drain(..)
-                    .map(|constructor| check_constructor(&mut variables, constructor, reporter))
+                    .map(|(name, constructor)| {
+                        check_constructor(&mut context, name, constructor, reporter)
+                    })
                     .collect::<Vec<_>>();
 
                 // Remove the type name and parameters from the scope
-                let (sort, _) = variables.pop().unwrap();
-                let params = variables
-                    .drain(variables.len() - params_len..)
-                    .map(|(param, _)| param)
+                let BoundVariable {
+                    name, r#type: sort, ..
+                } = context.pop();
+                let params = context
+                    .pop_many(params_len)
+                    .map(|v| (v.name, v.r#type))
                     .collect::<Vec<_>>();
 
                 // For ownership reasons, we first make the recursor, then the constructors, then
@@ -106,7 +113,8 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     formed_type = app_term(Span::none(), formed_type, param);
                 }
                 // TODO: Fix for `Prop`s
-                recursor = pi_term(Span::none(), formed_type, recursor);
+                let major_premise_name = Ident::new("major_premise");
+                recursor = pi_term(Span::none(), &major_premise_name, formed_type, recursor);
 
                 // Add each minor premise. The local context looks slightly different:
                 //
@@ -177,7 +185,7 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     for (t, &(j, param_params)) in
                         constructor.recursive_params.iter().enumerate().rev()
                     {
-                        let mut param_type = constructor.params[j].clone();
+                        let mut param_type = constructor.params[j].1.clone();
 
                         // Adjust the parameter type for the new context.
                         // Old context: Globals                  P₁…Pₘ  Type   A₁…Aⱼ
@@ -250,12 +258,15 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                             TermKind::Variable(Variable(v))
                         });
 
-                        minor_premise = pi_term(Span::none(), param_type, minor_premise);
+                        let recursive_name = Ident::new(format_args!("rec_{t}"));
+                        minor_premise =
+                            pi_term(Span::none(), &recursive_name, param_type, minor_premise);
                     }
 
                     // Construct parameters to the minor premise for each parameter, both recursive
                     // and non-recursive.
-                    for (j, param_type) in constructor.params.iter().enumerate().rev() {
+                    for (j, (param_name, param_type)) in constructor.params.iter().enumerate().rev()
+                    {
                         let mut param_type = param_type.clone();
 
                         // Adjust the parameter type for the new context.
@@ -304,10 +315,12 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                             TermKind::Variable(Variable(v))
                         });
 
-                        minor_premise = pi_term(Span::none(), param_type, minor_premise);
+                        minor_premise =
+                            pi_term(Span::none(), param_name, param_type, minor_premise);
                     }
 
-                    recursor = pi_term(Span::none(), minor_premise, recursor);
+                    let minor_premise_name = Ident::new(format_args!("minor_premise_{i}"));
+                    recursor = pi_term(Span::none(), &minor_premise_name, minor_premise, recursor);
                 }
 
                 // Add the motive parameter to the recursor.
@@ -328,25 +341,27 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     let level = lit_universe_level(Span::none(), 1);
                     let result = sort_term(Span::none(), level);
 
-                    let motive_type = pi_term(Span::none(), formed_type, result);
+                    let value_name = Ident::new("value");
+                    let motive_type = pi_term(Span::none(), &value_name, formed_type, result);
 
-                    recursor = pi_term(Span::none(), motive_type, recursor);
+                    let motive_name = Ident::new("motive");
+                    recursor = pi_term(Span::none(), &motive_name, motive_type, recursor);
                 }
 
                 // Add the parameters to the recursor.
-                for (i, param) in params.iter().enumerate().rev() {
-                    let mut param = param.clone();
+                for (i, (param_name, param_type)) in params.iter().enumerate().rev() {
+                    let mut param_type = param_type.clone();
                     // Take into account the type former and constructors that are now in scope
                     // but weren’t when variable resolution occured.
                     // Old context: Globals                  P₁…Pᵢ
                     // New context: Globals TypeFormer C₁…Cₙ P₁…Pᵢ
                     //                      \________/ \___/ \___/
                     //                          1     +  n  ,  i
-                    param.with_free(|v| {
+                    param_type.with_free(|v| {
                         let v = if v < i { v } else { v + 1 + constructors.len() };
                         TermKind::Variable(Variable(v))
                     });
-                    recursor = pi_term(Span::none(), param, recursor);
+                    recursor = pi_term(Span::none(), param_name, param_type, recursor);
                 }
 
                 // Make each of the constructors; don’t add to `variables` just yet because we
@@ -371,8 +386,9 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     //                    \___/
                     //                      l
                     let mut term = var_term(output_span, constructor.params.len());
-                    for param in constructor.params.into_iter().rev() {
-                        term = pi_term(param.span.join(term.span), param, term);
+                    for (param_name, param_type) in constructor.params.into_iter().rev() {
+                        let span = param_type.span.join(term.span);
+                        term = pi_term(span, &param_name, param_type, term);
                     }
 
                     // The formed type is initially the type former (whose index is offset by all
@@ -408,49 +424,81 @@ pub fn typecheck(items: Vec<Item>, reporter: &mut Reporter) {
                     });
 
                     // Add on all the parameters to the constructor
-                    for (j, param) in params.iter().enumerate().rev() {
-                        let mut param = param.clone();
+                    for (j, (param_name, param_type)) in params.iter().enumerate().rev() {
+                        let mut param_type = param_type.clone();
                         // Take into account the type former and constructors that are now in scope
                         // but weren’t when variable resolution occured.
                         // Old context: Globals                  P₁…Pⱼ
                         // New context: Globals TypeFormer C₁…Cᵢ P₁…Pⱼ
                         //                      \________/ \___/ \___/
                         //                          1     +  i  ,  j
-                        param.with_free(|v| {
+                        param_type.with_free(|v| {
                             TermKind::Variable(Variable(if v < j { v } else { v + i + 1 }))
                         });
-                        term = pi_term(constructor.span, param, term);
+                        term = pi_term(constructor.span, param_name, param_type, term);
                     }
 
-                    constructor_types.push(term);
+                    constructor_types.push((constructor.name, term));
                 }
 
                 // Construct the type former, then add it to the global scope
                 let mut type_former = sort;
-                for param in params.into_iter().rev() {
-                    let span = param.span.join(type_former.span);
+                for (param_name, param_type) in params.into_iter().rev() {
+                    let span = param_type.span.join(type_former.span);
                     // No variable offsetting is necessary as:
                     // Old context: Globals P₁…Pᵢ
                     // New context: Globals P₁…Pᵢ
-                    type_former = pi_term(span, param, type_former);
+                    type_former = pi_term(span, &param_name, param_type, type_former);
                 }
-                variables.push((type_former, None));
+                context.push(name, type_former, None);
 
                 // Add the constructors & recursor to the global scope
-                for constructor in constructor_types {
-                    variables.push((constructor, None));
+                for (name, r#type) in constructor_types {
+                    context.push(name, r#type, None);
                 }
-                variables.push((recursor, None));
+                context.push(item.recursor_name, recursor, None);
             }
         }
     }
 }
 
+#[derive(Default)]
+pub struct Context {
+    variables: Vec<BoundVariable>,
+}
+
+impl Context {
+    pub fn push(&mut self, name: Ident, r#type: Term, value: Option<Term>) {
+        self.variables.push(BoundVariable {
+            name,
+            r#type,
+            value,
+        });
+    }
+    pub fn pop(&mut self) -> BoundVariable {
+        self.variables.pop().unwrap()
+    }
+    pub fn pop_many(&mut self, n: usize) -> impl '_ + Iterator<Item = BoundVariable> {
+        self.variables.drain(self.variables.len() - n..)
+    }
+    pub fn get(&self, variable: Variable) -> &BoundVariable {
+        &self.variables[self.variables.len() - 1 - variable.0]
+    }
+}
+
+#[derive(Clone)]
+pub struct BoundVariable {
+    pub name: Ident,
+    pub r#type: Term,
+    pub value: Option<Term>,
+}
+
 struct Constructor {
+    name: Ident,
     // Local context of each param, whether recursive or not:
     //
     // Globals P₁…Pₙ Type
-    params: Vec<Term>,
+    params: Vec<(Ident, Term)>,
     /// Indices of parameters that are recursive. Also contains the number of parameters this
     /// recursive parameter takes itself.
     recursive_params: Vec<(usize, usize)>,
@@ -463,7 +511,8 @@ struct Constructor {
 // TODO: Disallow depending on recursive args
 // TODO: Move to &mut-based API
 fn check_constructor(
-    variables: &mut Vec<(Term, Option<Term>)>,
+    context: &mut Context,
+    name: Ident,
     mut term: Term,
     reporter: &mut Reporter,
 ) -> Constructor {
@@ -482,17 +531,17 @@ fn check_constructor(
             TermKind::Variable(v) if v == type_constructed => break,
             TermKind::Abstraction {
                 token: AbstractionToken::Pi,
-                variable: _,
+                variable: name,
                 r#type,
                 body,
             } => {
-                let (_, r#type) = type_of(variables, *r#type, reporter);
+                let (_, r#type) = type_of(context, *r#type, reporter);
                 let (recursive, num_params) =
                     check_strictly_positive(&r#type, type_constructed, reporter);
                 if recursive {
                     recursive_params.push((params, num_params));
                 }
-                variables.push((r#type, None));
+                context.push(name, r#type, None);
                 params += 1;
                 term = *body;
             }
@@ -507,9 +556,10 @@ fn check_constructor(
         }
     }
     Constructor {
-        params: variables
-            .drain(variables.len() - params..)
-            .map(|(p, _)| p)
+        name,
+        params: context
+            .pop_many(params)
+            .map(|v| (v.name, v.r#type))
             .collect(),
         recursive_params,
         span,
@@ -575,11 +625,7 @@ fn check_not_contained(term: &Term, variable: Variable, reporter: &mut Reporter)
     }
 }
 
-fn type_of(
-    variables: &mut Vec<(Term, Option<Term>)>,
-    mut term: Term,
-    reporter: &mut Reporter,
-) -> (Term, Term) {
+fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (Term, Term) {
     let r#type: Term;
 
     match term.kind {
@@ -606,16 +652,16 @@ fn type_of(
             term.kind = TermKind::Sort { level };
         }
         TermKind::Variable(v) => {
-            let pull_by = v.0 + 1;
-            let (mut type_term, value) = variables[variables.len() - pull_by].clone();
-            type_term.increase_free(pull_by);
+            let mut variable = context.get(v).clone();
+            // TODO: Check over this
+            variable.r#type.increase_free(v.0 + 1);
             r#type = Term {
-                kind: type_term.kind,
-                span: type_term.span,
+                kind: variable.r#type.kind,
+                span: variable.r#type.span,
             };
             // TODO: Is this enough to δ-reduce?
-            if let Some(mut value) = value {
-                value.increase_free(pull_by);
+            if let Some(mut value) = variable.value {
+                value.increase_free(v.0 + 1);
                 term = value;
             }
         }
@@ -625,15 +671,12 @@ fn type_of(
             r#type: param_type,
             body,
         } => {
-            let (mut param_type_type, mut param_type) = type_of(variables, *param_type, reporter);
+            let (mut param_type_type, mut param_type) = type_of(context, *param_type, reporter);
 
             let param_level = match param_type_type.kind {
                 TermKind::Sort { level } => level,
                 kind => {
-                    reporter.error(
-                        param_type.span,
-                        format_args!("{token} parameter is not a type"),
-                    );
+                    reporter.error(param_type.span, format!("{token} parameter is not a type"));
 
                     // Guess that the user meant to write the _type_ of the term they wrote
                     // e.g. convert (λ x : 5, x) to (λ x : nat, x)
@@ -641,15 +684,15 @@ fn type_of(
                         kind,
                         span: param_type.span,
                     };
-                    (param_type_type, param_type) = type_of(variables, assumed_type, reporter);
+                    (param_type_type, param_type) = type_of(context, assumed_type, reporter);
                     let TermKind::Sort { level } = param_type_type.kind else { unreachable!() };
                     level
                 }
             };
 
-            variables.push((param_type, None));
-            let (mut body_type, mut body) = type_of(variables, *body, reporter);
-            let param_type = Box::new(variables.pop().unwrap().0);
+            context.push(variable, param_type, None);
+            let (mut body_type, mut body) = type_of(context, *body, reporter);
+            let param = context.pop();
 
             match token {
                 // The type of the Π type is Sort imax u v
@@ -665,7 +708,7 @@ fn type_of(
                                 kind,
                                 span: body.span,
                             };
-                            (body_type, body) = type_of(variables, assumed_type, reporter);
+                            (body_type, body) = type_of(context, assumed_type, reporter);
                             let TermKind::Sort { level } = body_type.kind else { unreachable!() };
                             level
                         }
@@ -692,8 +735,8 @@ fn type_of(
                     r#type = Term {
                         kind: TermKind::Abstraction {
                             token: AbstractionToken::Pi,
-                            variable,
-                            r#type: param_type.clone(),
+                            variable: param.name.clone(),
+                            r#type: Box::new(param.r#type.clone()),
                             // TODO: Are the de bruijn indices correct here?
                             body: Box::new(body_type),
                         },
@@ -704,15 +747,15 @@ fn type_of(
 
             term.kind = TermKind::Abstraction {
                 token,
-                variable,
-                r#type: param_type,
+                variable: param.name,
+                r#type: Box::new(param.r#type),
                 body: Box::new(body),
             };
         }
         // β-reduction
         TermKind::Application { left, right } => {
-            let (left_type, left) = type_of(variables, *left, reporter);
-            let (right_type, right) = type_of(variables, *right, reporter);
+            let (left_type, left) = type_of(context, *left, reporter);
+            let (right_type, right) = type_of(context, *right, reporter);
 
             let TermKind::Abstraction { token: AbstractionToken::Pi, variable: _, r#type: param_type, body: mut ret_type } = left_type.kind else {
                 reporter.error(left.span, "left hand side of application is not a function");
@@ -725,17 +768,17 @@ fn type_of(
                     right.span,
                     format!(
                         "function application type mismatch on {} of {}\n expected: {}\n      got: {}",
-                        left.display(reporter.source()),
-                        right.display(reporter.source()),
-                        param_type.display(reporter.source()),
-                        right_type.display(reporter.source()),
+                        left.display(context),
+                        right.display(context),
+                        param_type.display(context),
+                        right_type.display(context),
                     ),
                 );
             }
 
             // Replace the lowest free variable in the return type with the new type.
             ret_type.replace(&right);
-            (_, r#type) = type_of(variables, *ret_type, reporter);
+            (_, r#type) = type_of(context, *ret_type, reporter);
 
             // TODO: recursive replacing; is this right?
             if let TermKind::Abstraction {
@@ -748,7 +791,7 @@ fn type_of(
                 assert!(*r#type == *param_type);
                 // Replace the lowest free variable in the lambda body with the new value.
                 body.replace(&right);
-                (_, term) = type_of(variables, *body, reporter);
+                (_, term) = type_of(context, *body, reporter);
             } else {
                 let left = Box::new(left);
                 let right = Box::new(right);
@@ -868,19 +911,20 @@ fn var_term(span: Span, i: usize) -> Term {
     }
 }
 
-fn pi_term(span: Span, r#type: Term, body: Term) -> Term {
+fn pi_term(span: Span, variable: &Ident, r#type: Term, body: Term) -> Term {
     Term {
         span,
         kind: TermKind::Abstraction {
             token: AbstractionToken::Pi,
+            variable: variable.clone(),
             r#type: Box::new(r#type),
             body: Box::new(body),
-            variable: Span::none(),
         },
     }
 }
 
 use crate::parser::AbstractionToken;
+use crate::parser::Ident;
 use crate::parser::UniverseLevelLit;
 use crate::reporter::Reporter;
 use crate::reporter::Span;

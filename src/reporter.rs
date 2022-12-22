@@ -11,10 +11,6 @@ impl Reporter {
         }
     }
 
-    pub fn source(&self) -> &str {
-        &self.source
-    }
-
     fn to_char(&self, i: usize) -> usize {
         self.source
             .char_indices()
@@ -69,14 +65,6 @@ impl Span {
         }
     }
 }
-
-impl PartialEq for Span {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl Eq for Span {}
 
 use ariadne::Label;
 use ariadne::Report;

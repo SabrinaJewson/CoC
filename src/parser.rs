@@ -41,7 +41,7 @@ pub enum TermKind {
     Sort {
         level: UniverseLevel,
     },
-    Variable(Box<lexer::Ident>),
+    Variable(Rc<lexer::Ident>),
     Abstraction {
         token: AbstractionToken,
         variable: Ident,
@@ -77,7 +77,7 @@ pub struct UniverseLevel {
 
 pub enum UniverseLevelKind {
     Lit(UniverseLevelLit),
-    Variable(Box<lexer::Ident>),
+    Variable(Rc<lexer::Ident>),
     Addition {
         left: Box<UniverseLevel>,
         /// `None` indicates an error
@@ -109,10 +109,35 @@ impl Display for UniverseLevelLit {
     }
 }
 
+#[derive(Clone)]
 pub struct Ident {
-    pub name: Box<lexer::Ident>,
+    pub name: Rc<lexer::Ident>,
     pub span: Span,
 }
+
+impl Ident {
+    pub fn new(name: impl Display) -> Self {
+        Self {
+            name: lexer::Ident::new(&name.to_string()).unwrap(),
+            span: Span::none(),
+        }
+    }
+}
+
+impl Display for Ident {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.name, f)
+    }
+}
+
+// This looks weird — it’s to avoid different idents mattering when comparing terms
+impl PartialEq for Ident {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Ident {}
 
 pub fn parse(tokens: impl IntoIterator<Item = Token>, reporter: &mut Reporter) -> Source {
     let mut tokens = tokens.into_iter().peekable();
@@ -522,4 +547,5 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::iter::Peekable;
+use std::rc::Rc;
 use std::vec;
