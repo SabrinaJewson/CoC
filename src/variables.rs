@@ -23,6 +23,79 @@ pub struct Term {
     pub kind: TermKind,
 }
 
+impl Term {
+    /// Call a function on every free variable of this term.
+    pub fn with_free(&mut self, mut f: impl FnMut(usize) -> TermKind) {
+        let mut to_process = vec![(self, Variable(0))];
+        while let Some((term, lowest_free)) = to_process.pop() {
+            // This is split into its own `match` to work around Polonius
+            match &term.kind {
+                // Only modify free variables
+                TermKind::Variable(v) if *v >= lowest_free => {
+                    term.kind = f(v.0 - lowest_free.0);
+                    term.increase_free(lowest_free.0);
+                    continue;
+                }
+                _ => {}
+            }
+
+            match &mut term.kind {
+                // Do not modify bound variables
+                TermKind::Variable(_) => {}
+                TermKind::Abstraction { r#type, body, .. } => {
+                    to_process.push((r#type, lowest_free));
+                    to_process.push((body, Variable(lowest_free.0 + 1)));
+                }
+                TermKind::Application { left, right } => {
+                    to_process.push((left, lowest_free));
+                    to_process.push((right, lowest_free));
+                }
+                // Sorts and errors do not contain variables
+                TermKind::Sort { .. } | TermKind::Error => {}
+            }
+        }
+    }
+
+    /// Increase the values of all free variables in the given expression.
+    pub fn increase_free(&mut self, by: usize) {
+        self.increase_free_from(by, Variable(0));
+    }
+
+    /// Increase the values of all free variables in the given expression.
+    pub fn increase_free_from(&mut self, by: usize, lowest_free: Variable) {
+        let mut to_process = vec![(self, lowest_free)];
+        while let Some((term, lowest_free)) = to_process.pop() {
+            match &mut term.kind {
+                // Do not modify bound variables
+                TermKind::Variable(v) if *v < lowest_free => {}
+                // Add to free variables
+                TermKind::Variable(v) => v.0 += by,
+                TermKind::Abstraction { r#type, body, .. } => {
+                    to_process.push((r#type, lowest_free));
+                    to_process.push((body, Variable(lowest_free.0 + 1)));
+                }
+                TermKind::Application { left, right } => {
+                    to_process.push((left, lowest_free));
+                    to_process.push((right, lowest_free));
+                }
+                // Sorts and errors do not contain variables
+                TermKind::Sort { .. } | TermKind::Error => {}
+            }
+        }
+    }
+
+    /// Replace the lowest free variable in the given term with the replacement.
+    pub fn replace(&mut self, with: &Term) {
+        self.with_free(|v| {
+            if v == 0 {
+                with.kind.clone()
+            } else {
+                TermKind::Variable(Variable(v - 1))
+            }
+        })
+    }
+}
+
 impl PartialEq for Term {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind
@@ -32,88 +105,66 @@ impl PartialEq for Term {
 impl Term {
     pub fn display<'this, 'context>(
         &'this self,
-        context: &'context Context,
+        context: &'context mut Context,
     ) -> TermDisplay<'this, 'context> {
-        TermDisplay {
-            term: self,
-            context,
-        }
+        TermDisplay { term: self, context: Cell::new(Some(context)) }
     }
 }
 
-pub struct TermDisplay<'term, 'context> {
+pub struct TermDisplay<'term, 'variables> {
     term: &'term Term,
-    context: &'context Context,
+    context: Cell<Option<&'variables mut Context>>,
 }
 
 impl Display for TermDisplay<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        display_term(self.context, &mut Vec::new(), false, self.term, f)
-    }
-}
+        let context = self.context.take().expect("`Display` on `TermDisplay` called more than once");
 
-fn display_term<'term>(
-    context: &Context,
-    variables: &mut Vec<&'term Ident>,
-    brackets: bool,
-    term: &'term Term,
-    f: &mut Formatter<'_>,
-) -> fmt::Result {
-    let needs_brackets = brackets && !matches!(term.kind, TermKind::Variable(_) | TermKind::Error);
-
-    if needs_brackets {
-        f.write_str("(")?;
-    }
-
-    match &term.kind {
-        TermKind::Sort { level } => write!(f, "Sort {level:?}")?,
-        // TODO: We don’t currently implement α-conversion to remove collisions, meaning error
-        // messages can sometimes not make sense in rare cases
-        TermKind::Variable(v) => {
-            if let Some(v) = v.0.checked_sub(variables.len()) {
-                Display::fmt(&context.get(Variable(v)).name, f)?;
-            } else {
-                Display::fmt(&variables[variables.len() - 1 - v.0], f)?;
+        match &self.term.kind {
+            TermKind::Sort { level } => write!(f, "Sort {level:?}"),
+            TermKind::Variable(v) => Display::fmt(&context.get(*v).name, f),
+            TermKind::Abstraction {
+                token,
+                variable,
+                r#type,
+                body,
+            } => {
+                write!(f, "{token} {variable} ")
+                write!(
+                    f,
+                    "{token} {variable} : {}, {}",
+                    r#type.display(self.source),
+                    body.display(self.source)
+                )
             }
-        }
-        TermKind::Abstraction {
-            token,
-            variable,
-            r#type,
-            body,
-        } => {
-            write!(f, "{token} {variable} : ")?;
-            display_term(context, variables, false, r#type, f)?;
-            f.write_str(", ")?;
-            variables.push(variable);
-            display_term(context, variables, false, body, f)?;
-            variables.pop().unwrap();
-        }
-        TermKind::Application { left, right } => {
-            let mut left = left;
-            let mut chain = vec![right];
-            while let TermKind::Application {
-                left: new_left,
-                right,
-            } = &left.kind
-            {
-                chain.push(right);
-                left = new_left;
+            TermKind::Application { left, right } => {
+                let mut left = left;
+                let mut chain = vec![right];
+                while let TermKind::Application {
+                    left: new_left,
+                    right,
+                } = &left.kind
+                {
+                    chain.push(right);
+                    left = new_left;
+                }
+                if let TermKind::Variable(_) | TermKind::Error = &left.kind {
+                    write!(f, "{}", left.display(self.source))?;
+                } else {
+                    write!(f, "({})", left.display(self.source))?;
+                };
+                for item in chain.into_iter().rev() {
+                    if let TermKind::Variable(_) | TermKind::Error = &item.kind {
+                        write!(f, " {}", item.display(self.source))?;
+                    } else {
+                        write!(f, " ({})", item.display(self.source))?;
+                    }
+                }
+                Ok(())
             }
-            display_term(context, variables, true, left, f)?;
-            for item in chain.into_iter().rev() {
-                f.write_str(" ")?;
-                display_term(context, variables, true, item, f)?;
-            }
+            TermKind::Error => f.write_str("[error]"),
         }
-        TermKind::Error => f.write_str("[error]")?,
     }
-
-    if needs_brackets {
-        f.write_str(")")?;
-    }
-
-    Ok(())
 }
 
 #[derive(Clone, PartialEq)]
@@ -133,65 +184,6 @@ pub enum TermKind {
         right: Box<Term>,
     },
     Error,
-}
-
-impl TermKind {
-    /// Replace the lowest free variable in the given term with the replacement.
-    pub fn replace(&mut self, with: &Term) {
-        self.substitute_free(|v| {
-            if v == 0 {
-                with.kind.clone()
-            } else {
-                TermKind::Variable(Variable(v - 1))
-            }
-        })
-    }
-
-    /// Increase the values of free variables above a given threshold in the given expression.
-    pub fn increase_free(&mut self, by: usize) {
-        self.substitute_free_with_depth(|v, depth| TermKind::Variable(Variable(v + by + depth)))
-    }
-
-    /// Substitute every free variable of this term.
-    pub fn substitute_free(&mut self, mut f: impl FnMut(usize) -> TermKind) {
-        self.substitute_free_with_depth(|v, depth| {
-            let mut term = f(v);
-            term.increase_free(depth);
-            term
-        });
-    }
-
-    /// Substitute every free variable of this term. The second parameter to the closure is the
-    /// depth at which the substitution is occuring.
-    pub fn substitute_free_with_depth(&mut self, mut f: impl FnMut(usize, usize) -> TermKind) {
-        let mut to_process = vec![(self, Variable(0))];
-        while let Some((term, lowest_free)) = to_process.pop() {
-            // This is split into its own `match` to work around Polonius
-            match term {
-                // Only modify free variables
-                TermKind::Variable(v) if *v >= lowest_free => {
-                    *term = f(v.0 - lowest_free.0, lowest_free.0);
-                    continue;
-                }
-                _ => {}
-            }
-
-            match term {
-                // Do not modify bound variables
-                TermKind::Variable(_) => {}
-                TermKind::Abstraction { r#type, body, .. } => {
-                    to_process.push((&mut r#type.kind, lowest_free));
-                    to_process.push((&mut body.kind, Variable(lowest_free.0 + 1)));
-                }
-                TermKind::Application { left, right } => {
-                    to_process.push((&mut left.kind, lowest_free));
-                    to_process.push((&mut right.kind, lowest_free));
-                }
-                // Sorts and errors do not contain variables
-                TermKind::Sort { .. } | TermKind::Error => {}
-            }
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -419,7 +411,6 @@ fn resolve_universe_level(
     Some(UniverseLevel { kind, span })
 }
 
-use crate::kernel::Context;
 use crate::lexer;
 use crate::parser;
 use crate::parser::AbstractionToken;
@@ -431,3 +422,7 @@ use core::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use crate::kernel::BoundVariable;
+use std::cell::Cell;
+use crate::kernel::Context;
+

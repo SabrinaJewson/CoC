@@ -818,18 +818,21 @@ fn type_of(context: &mut Context, mut term: Term, reporter: &mut Reporter) -> (T
     (r#type, term)
 }
 
-fn reduce_universe_level(level: &UniverseLevel, reporter: &mut Reporter) -> UniverseLevel {
-    let kind = match &level.kind {
-        UniverseLevelKind::Lit(n) => UniverseLevelKind::Lit(*n),
+// Lean itself doesn’t have a perfectly normalizing algorithm for this, so we just use some common
+// heuristics to simplify.
+fn reduce_universe_level(level: &mut UniverseLevel, reporter: &mut Reporter) {
+    match &mut level.kind {
+        UniverseLevelKind::Lit(_) => {}
         UniverseLevelKind::Variable(v) => match *v {},
         UniverseLevelKind::Addition {
             left,
             right: Some(right),
         } => {
-            match reduce_universe_level(left, reporter).kind {
+            reduce_universe_level(left, reporter);
+            match left.kind {
                 UniverseLevelKind::Lit(left) => {
                     let lit = add_universe_level_lit(left, *right, reporter);
-                    UniverseLevelKind::Lit(lit)
+                    level.kind = UniverseLevelKind::Lit(lit);
                 }
                 UniverseLevelKind::Variable(v) => match v {},
                 UniverseLevelKind::Addition {
@@ -871,9 +874,7 @@ fn reduce_universe_level(level: &UniverseLevel, reporter: &mut Reporter) -> Univ
             }
         }
         UniverseLevelKind::Error => UniverseLevelKind::Error,
-    };
-    let span = level.span;
-    UniverseLevel { kind, span }
+    }
 }
 
 fn add_universe_level_lit(
